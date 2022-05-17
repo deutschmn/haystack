@@ -1217,7 +1217,7 @@ class MultihopDenseRetriever(BaseRetriever):
                 # get logits
                 with torch.no_grad():
                     # FIXME(deutschmn): Won't work with AdaptiveModel, since it always only returns
-                    # one embedding, not two
+                    # one embedding, not two -> use BiAdaptiveModel or own implementation?
                     query_embeddings, passage_embeddings = self.model.forward(**batch)[0]
                     if query_embeddings is not None:
                         all_embeddings["query"].append(query_embeddings.cpu().numpy())
