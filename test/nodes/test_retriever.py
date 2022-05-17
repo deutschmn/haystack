@@ -55,6 +55,8 @@ def docs():
 @pytest.mark.parametrize(
     "retriever_with_docs,document_store_with_docs",
     [
+        # TODO(deutschmn) add other MDR combinations
+        ("mdr", "elasticsearch"),
         ("dpr", "elasticsearch"),
         ("dpr", "faiss"),
         ("dpr", "memory"),
