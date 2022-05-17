@@ -16,6 +16,7 @@ from haystack.schema import Document
 from haystack.document_stores import BaseDocumentStore
 from haystack.nodes.retriever.base import BaseRetriever
 from haystack.nodes.retriever._embedding_encoder import _EMBEDDING_ENCODERS
+from haystack.modeling.model.adaptive_model import AdaptiveModel
 from haystack.modeling.model.tokenization import Tokenizer
 from haystack.modeling.model.language_model import LanguageModel
 from haystack.modeling.model.biadaptive_model import BiAdaptiveModel
@@ -758,13 +759,15 @@ class MultihopDenseRetriever(BaseRetriever):
     (https://arxiv.org/abs/2009.12756)
     """
 
+    # TODO(deutschmn) Replace all occurences of "DensePassageRetriever" with "MultihopDenseRetriever"
+
     # FIXME(deutschmn) Adapt
     def __init__(
         self,
         document_store: BaseDocumentStore,
-        query_embedding_model: Union[Path, str] = "facebook/dpr-question_encoder-single-nq-base",
-        passage_embedding_model: Union[Path, str] = "facebook/dpr-ctx_encoder-single-nq-base",
+        embedding_model: Union[Path, str] = "roberta-base",  # TODO(deutschmn) different default?
         model_version: Optional[str] = None,
+        num_iterations: int = 2,
         max_seq_len_query: int = 64,
         max_seq_len_passage: int = 256,
         top_k: int = 10,
@@ -781,30 +784,26 @@ class MultihopDenseRetriever(BaseRetriever):
         scale_score: bool = True,
     ):
         """
-        Init the Retriever incl. the two encoder models from a local or remote model checkpoint.
+        Init the Retriever incl. the encoder model from a local or remote model checkpoint.
         The checkpoint format matches huggingface transformers' model format
 
         **Example:**
 
                 ```python
-                |    # remote model from FAIR
+                |    # remote model
                 |    DensePassageRetriever(document_store=your_doc_store,
-                |                          query_embedding_model="facebook/dpr-question_encoder-single-nq-base",
-                |                          passage_embedding_model="facebook/dpr-ctx_encoder-single-nq-base")
+                |                          embedding_model="roberta-base") # TODO(deutschmn) different default? - see above
                 |    # or from local path
                 |    DensePassageRetriever(document_store=your_doc_store,
-                |                          query_embedding_model="model_directory/question-encoder",
-                |                          passage_embedding_model="model_directory/context-encoder")
+                |                          embedding_model="model_directory/encoder")
                 ```
 
         :param document_store: An instance of DocumentStore from which to retrieve documents.
-        :param query_embedding_model: Local path or remote name of question encoder checkpoint. The format equals the
+        :param query_embedding_model: Local path or remote name of encoder checkpoint. The format equals the
                                       one used by hugging-face transformers' modelhub models
-                                      Currently available remote names: ``"facebook/dpr-question_encoder-single-nq-base"``
-        :param passage_embedding_model: Local path or remote name of passage encoder checkpoint. The format equals the
-                                        one used by hugging-face transformers' modelhub models
-                                        Currently available remote names: ``"facebook/dpr-ctx_encoder-single-nq-base"``
+                                      Currently available remote names: ``"roberta-base"`` # TODO(deutschmn) different default? - see above
         :param model_version: The version of model to use from the HuggingFace model hub. Can be tag name, branch name, or commit hash.
+        :param num_iterations: The number of times passages are retrieved, i.e., the number of hops (Defaults to 2.)
         :param max_seq_len_query: Longest length of each query sequence. Maximum number of tokens for the query text. Longer ones will be cut down."
         :param max_seq_len_passage: Longest length of each passage/context sequence. Maximum number of tokens for the passage text. Longer ones will be cut down."
         :param top_k: How many documents to return per query.
@@ -852,6 +851,7 @@ class MultihopDenseRetriever(BaseRetriever):
         self.progress_bar = progress_bar
         self.top_k = top_k
         self.scale_score = scale_score
+        self.num_iterations = num_iterations
 
         if document_store is None:
             logger.warning(
@@ -867,44 +867,29 @@ class MultihopDenseRetriever(BaseRetriever):
             )
 
         self.infer_tokenizer_classes = infer_tokenizer_classes
-        tokenizers_default_classes = {"query": "DPRQuestionEncoderTokenizer", "passage": "DPRContextEncoderTokenizer"}
+        tokenizer_default_class: Optional[str] = "RobertaTokenizer"  # TODO(deutschmn) different default? - see above
         if self.infer_tokenizer_classes:
-            tokenizers_default_classes["query"] = None  # type: ignore
-            tokenizers_default_classes["passage"] = None  # type: ignore
+            tokenizer_default_class = None
 
         # Init & Load Encoders
-        self.query_tokenizer = Tokenizer.load(
-            pretrained_model_name_or_path=query_embedding_model,
+        self.tokenizer = Tokenizer.load(
+            pretrained_model_name_or_path=embedding_model,
             revision=model_version,
             do_lower_case=True,
             use_fast=use_fast_tokenizers,
-            tokenizer_class=tokenizers_default_classes["query"],
+            tokenizer_class=tokenizer_default_class,
             use_auth_token=use_auth_token,
         )
-        self.query_encoder = LanguageModel.load(
-            pretrained_model_name_or_path=query_embedding_model,
+        self.encoder = LanguageModel.load(
+            pretrained_model_name_or_path=embedding_model,
             revision=model_version,
-            language_model_class="DPRQuestionEncoder",
             use_auth_token=use_auth_token,
-        )
-        self.passage_tokenizer = Tokenizer.load(
-            pretrained_model_name_or_path=passage_embedding_model,
-            revision=model_version,
-            do_lower_case=True,
-            use_fast=use_fast_tokenizers,
-            tokenizer_class=tokenizers_default_classes["passage"],
-            use_auth_token=use_auth_token,
-        )
-        self.passage_encoder = LanguageModel.load(
-            pretrained_model_name_or_path=passage_embedding_model,
-            revision=model_version,
-            language_model_class="DPRContextEncoder",
-            use_auth_token=use_auth_token,
+            language_model_class="DPRContextEncoder",  # TODO(deutschmn)  really necessary?
         )
 
         self.processor = TextSimilarityProcessor(
-            query_tokenizer=self.query_tokenizer,
-            passage_tokenizer=self.passage_tokenizer,
+            query_tokenizer=self.tokenizer,
+            passage_tokenizer=self.tokenizer,
             max_seq_len_passage=max_seq_len_passage,
             max_seq_len_query=max_seq_len_query,
             label_list=["hard_negative", "positive"],
@@ -916,13 +901,15 @@ class MultihopDenseRetriever(BaseRetriever):
         prediction_head = TextSimilarityHead(
             similarity_function=similarity_function, global_loss_buffer_size=global_loss_buffer_size
         )
-        self.model = BiAdaptiveModel(
-            language_model1=self.query_encoder,
-            language_model2=self.passage_encoder,
+        self.model: torch.nn.Module = AdaptiveModel(
+            language_model=self.encoder,
             prediction_heads=[prediction_head],
             embeds_dropout_prob=0.1,
-            lm1_output_types=["per_sequence"],
-            lm2_output_types=["per_sequence"],
+            # TODO(deutschmn): this is quite a hack to make AdaptiveModel compatible with
+            # DPRContextEncoder: AdaptiveModel with "per_sequence" expects first return value of
+            # language_model to be sequence_output, but DPRContextEncoder returns pooled
+            # -> with "per_token" this works, but it's probably not the way the parameter was designed
+            lm_output_types=["per_token"],
             device=self.devices[0],
         )
 
@@ -931,7 +918,6 @@ class MultihopDenseRetriever(BaseRetriever):
         if len(self.devices) > 1:
             self.model = DataParallel(self.model, device_ids=self.devices)
 
-    # FIXME(deutschmn) Adapt
     def retrieve(
         self,
         query: str,
@@ -1015,20 +1001,16 @@ class MultihopDenseRetriever(BaseRetriever):
                                            If true similarity scores (e.g. cosine or dot_product) which naturally have a different value range will be scaled to a range of [0,1], where 1 means extremely relevant.
                                            Otherwise raw similarity scores (e.g. cosine or dot_product) will be used.
         """
-        if top_k is None:
-            top_k = self.top_k
-        if not self.document_store:
-            logger.error("Cannot perform retrieve() since DensePassageRetriever initialized with document_store=None")
-            return []
-        if index is None:
-            index = self.document_store.index
-        if scale_score is None:
-            scale_score = self.scale_score
-        query_emb = self.embed_queries(texts=[query])
-        documents = self.document_store.query_by_embedding(
-            query_emb=query_emb[0], top_k=top_k, filters=filters, index=index, headers=headers, scale_score=scale_score
+        # TODO(deutschmn): Should be ok like this, right?
+        return self.retrieve_batch(  # type: ignore
+            queries=query,
+            filters=filters,
+            top_k=top_k,
+            index=index,
+            headers=headers,
+            scale_score=scale_score,
+            batch_size=1,
         )
-        return documents
 
     # FIXME(deutschmn) Adapt
     def retrieve_batch(
@@ -1154,27 +1136,33 @@ class MultihopDenseRetriever(BaseRetriever):
             scale_score = self.scale_score
         if not self.document_store:
             logger.error(
-                "Cannot perform retrieve_batch() since DensePassageRetriever initialized with document_store=None"
+                "Cannot perform retrieve_batch() since MultihopDenseRetriever initialized with document_store=None"
             )
             if single_query:
-                return []  # type: ignore
+                single_result: List[Document] = []
+                return single_result
             else:
-                return [[] * len(queries)]  # type: ignore
+                result: List[List[Document]] = [[] * len(queries)]
+                return result
 
         documents = []
-        query_embs = []
-        for batch in self._get_batches(queries=queries, batch_size=batch_size):
-            query_embs.extend(self.embed_queries(texts=batch))
-        for query_emb, cur_filters in zip(query_embs, filters):
-            cur_docs = self.document_store.query_by_embedding(
-                query_emb=query_emb,
-                top_k=top_k,
-                filters=cur_filters,
-                index=index,
-                headers=headers,
-                scale_score=scale_score,
-            )
-            documents.append(cur_docs)
+        batches = self._get_batches(queries=queries, batch_size=batch_size)
+        # TODO: Currently filters are applied both for final and context documents.
+        # maybe they should only apply for final docs? or make it configurable with a param?
+        for batch, cur_filters in zip(batches, filters):
+            context_docs: List[List[Document]] = [[] * len(batch)]
+            for _ in range(self.num_iterations):
+                query_emb = self.embed_queries(queries=batch, contexts=context_docs)
+                cur_docs = self.document_store.query_by_embedding(
+                    query_emb=query_emb,
+                    top_k=top_k,
+                    filters=cur_filters,
+                    index=index,
+                    headers=headers,
+                    scale_score=scale_score,
+                )
+                # FIXME(deutschmn): continue implementation here by adding top result to context_docs
+                documents.append(cur_docs)
 
         if single_query:
             return documents[0]
@@ -1228,6 +1216,8 @@ class MultihopDenseRetriever(BaseRetriever):
 
                 # get logits
                 with torch.no_grad():
+                    # FIXME(deutschmn): Won't work with AdaptiveModel, since it always only returns
+                    # one embedding, not two
                     query_embeddings, passage_embeddings = self.model.forward(**batch)[0]
                     if query_embeddings is not None:
                         all_embeddings["query"].append(query_embeddings.cpu().numpy())
@@ -1241,16 +1231,19 @@ class MultihopDenseRetriever(BaseRetriever):
             all_embeddings["query"] = np.concatenate(all_embeddings["query"])
         return all_embeddings
 
-    # FIXME(deutschmn) Adapt
-    def embed_queries(self, texts: List[str]) -> List[np.ndarray]:
+    def _merge_query_and_context(self, query: str, context: List[Document], sep: str = " "):
+        return sep.join([query] + [doc.content for doc in context])
+
+    def embed_queries(self, queries: List[str], contexts: List[List[Document]]) -> List[np.ndarray]:
         """
         Create embeddings for a list of queries using the query encoder
 
-        :param texts: Queries to embed
+        :param queries: Queries to embed
+        :param contexts: Context documents
         :return: Embeddings, one per input queries
         """
-        queries = [{"query": q} for q in texts]
-        result = self._get_predictions(queries)["query"]
+        encoder_inputs = [{"query": self._merge_query_and_context(q, c)} for q, c in zip(queries, contexts)]
+        result = self._get_predictions(encoder_inputs)["query"]
         return result
 
     # FIXME(deutschmn) Adapt
