@@ -488,6 +488,22 @@ class BiAdaptiveModel(nn.Module):
 
 
 class BiAdaptiveSharedModel(BiAdaptiveModel):
+    # TODO(deutschmn): Assert somewhere that language_model1 == language_model2
+
+    def save(self, save_dir: Path, lm_name: str = "lm"):
+        """
+        Saves the language model weights and respective config_files in directory lm within save_dir.
+
+        :param save_dir: Path to save the model to.
+        """
+        os.makedirs(save_dir, exist_ok=True)
+        if not os.path.exists(Path.joinpath(save_dir, Path(lm_name))):
+            os.makedirs(Path.joinpath(save_dir, Path(lm_name)))
+        self.language_model1.save(Path.joinpath(save_dir, Path(lm_name)))
+        for i, ph in enumerate(self.prediction_heads):
+            logger.info("prediction_head saving")
+            ph.save(save_dir, i)
+
     def forward_lm(self, **kwargs):
         pooled_output = [None, None]
         if "query_input_ids" in kwargs.keys():

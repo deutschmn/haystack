@@ -1296,12 +1296,11 @@ class MultihopDenseRetriever(BaseRetriever):
         use_amp: str = None,
         optimizer_name: str = "AdamW",
         optimizer_correct_bias: bool = True,
-        save_dir: str = "../saved_models/dpr",
-        query_encoder_save_dir: str = "query_encoder",
-        passage_encoder_save_dir: str = "passage_encoder",
+        save_dir: str = "../saved_models/mdr",
+        encoder_save_dir: str = "encoder",
     ):
         """
-        train a DensePassageRetrieval model
+        train a MultihopDenseRetriever model
         :param data_dir: Directory where training file, dev file and test file are present
         :param train_filename: training filename
         :param dev_filename: development set filename, file to be used by model in eval step of training
@@ -1334,8 +1333,7 @@ class MultihopDenseRetriever(BaseRetriever):
         :param num_warmup_steps: number of warmup steps
         :param optimizer_correct_bias: Whether to correct bias in optimizer
         :param save_dir: directory where models are saved
-        :param query_encoder_save_dir: directory inside save_dir where query_encoder model files are saved
-        :param passage_encoder_save_dir: directory inside save_dir where passage_encoder model files are saved
+        :param encoder_save_dir: directory inside save_dir where encoder model files are saved
         """
         self.processor.embed_title = embed_title
         self.processor.data_dir = Path(data_dir)
@@ -1394,9 +1392,8 @@ class MultihopDenseRetriever(BaseRetriever):
         # 7. Let it grow! Watch the tracked metrics live on experiment tracker (e.g. Mlflow)
         trainer.train()
 
-        self.model.save(Path(save_dir), lm1_name=query_encoder_save_dir, lm2_name=passage_encoder_save_dir)
-        self.query_tokenizer.save_pretrained(f"{save_dir}/{query_encoder_save_dir}")
-        self.passage_tokenizer.save_pretrained(f"{save_dir}/{passage_encoder_save_dir}")
+        self.model.save(Path(save_dir), lm_name=encoder_save_dir)
+        self.tokenizer.save_pretrained(Path(save_dir) / encoder_save_dir)
 
         if len(self.devices) > 1 and not isinstance(self.model, DataParallel):
             self.model = DataParallel(self.model, device_ids=self.devices)
