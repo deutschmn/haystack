@@ -758,9 +758,6 @@ class MultihopDenseRetriever(BaseRetriever):
     (https://arxiv.org/abs/2009.12756)
     """
 
-    # TODO(deutschmn) Replace all occurences of "DensePassageRetriever" with "MultihopDenseRetriever"
-
-    # FIXME(deutschmn) Adapt
     def __init__(
         self,
         document_store: BaseDocumentStore,
@@ -790,10 +787,10 @@ class MultihopDenseRetriever(BaseRetriever):
 
                 ```python
                 |    # remote model
-                |    DensePassageRetriever(document_store=your_doc_store,
+                |    MultihopDenseRetriever(document_store=your_doc_store,
                 |                          embedding_model="roberta-base") # TODO(deutschmn) different default? - see above
                 |    # or from local path
-                |    DensePassageRetriever(document_store=your_doc_store,
+                |    MultihopDenseRetriever(document_store=your_doc_store,
                 |                          embedding_model="model_directory/encoder")
                 ```
 
@@ -854,13 +851,14 @@ class MultihopDenseRetriever(BaseRetriever):
 
         if document_store is None:
             logger.warning(
-                "DensePassageRetriever initialized without a document store. "
+                "MultihopDenseRetriever initialized without a document store. "
                 "This is fine if you are performing DPR training. "
                 "Otherwise, please provide a document store in the constructor."
             )
         elif document_store.similarity != "dot_product":
+            # TODO(deutschmn): Check this warning from DPR - should not be necessary for MDR, right?
             logger.warning(
-                f"You are using a Dense Passage Retriever model with the {document_store.similarity} function. "
+                f"You are using a MultihopDenseRetriever model with the {document_store.similarity} function. "
                 "We recommend you use dot_product instead. "
                 "This can be set when initializing the DocumentStore"
             )
@@ -996,7 +994,6 @@ class MultihopDenseRetriever(BaseRetriever):
                                            If true similarity scores (e.g. cosine or dot_product) which naturally have a different value range will be scaled to a range of [0,1], where 1 means extremely relevant.
                                            Otherwise raw similarity scores (e.g. cosine or dot_product) will be used.
         """
-        # TODO(deutschmn): Should be ok like this, right?
         return self.retrieve_batch(  # type: ignore
             queries=query,
             filters=filters,
@@ -1007,7 +1004,6 @@ class MultihopDenseRetriever(BaseRetriever):
             batch_size=1,
         )
 
-    # FIXME(deutschmn) Adapt
     def retrieve_batch(
         self,
         queries: Union[str, List[str]],
@@ -1169,7 +1165,6 @@ class MultihopDenseRetriever(BaseRetriever):
         else:
             return documents
 
-    # FIXME(deutschmn) Adapt
     def _get_predictions(self, dicts):
         """
         Feed a preprocessed dataset to the model and get the actual predictions (forward pass + formatting).
@@ -1244,7 +1239,6 @@ class MultihopDenseRetriever(BaseRetriever):
         result = self._get_predictions(encoder_inputs)["query"]
         return result
 
-    # FIXME(deutschmn) Adapt
     def embed_documents(self, docs: List[Document]) -> List[np.ndarray]:
         """
         Create embeddings for a list of documents using the passage encoder
@@ -1276,7 +1270,7 @@ class MultihopDenseRetriever(BaseRetriever):
 
         return embeddings
 
-    # FIXME(deutschmn) Adapt
+    # FIXME(deutschmn) Review and adapt
     def train(
         self,
         data_dir: str,
@@ -1407,7 +1401,7 @@ class MultihopDenseRetriever(BaseRetriever):
         if len(self.devices) > 1 and not isinstance(self.model, DataParallel):
             self.model = DataParallel(self.model, device_ids=self.devices)
 
-    # FIXME(deutschmn) Adapt
+    # FIXME(deutschmn) Review and adapt
     def save(
         self,
         save_dir: Union[Path, str],
@@ -1415,7 +1409,7 @@ class MultihopDenseRetriever(BaseRetriever):
         passage_encoder_dir: str = "passage_encoder",
     ):
         """
-        Save DensePassageRetriever to the specified directory.
+        Save MultihopDenseRetriever to the specified directory.
 
         :param save_dir: Directory to save to.
         :param query_encoder_dir: Directory in save_dir that contains query encoder model.
@@ -1428,7 +1422,7 @@ class MultihopDenseRetriever(BaseRetriever):
         self.query_tokenizer.save_pretrained(save_dir + f"/{query_encoder_dir}")
         self.passage_tokenizer.save_pretrained(save_dir + f"/{passage_encoder_dir}")
 
-    # FIXME(deutschmn) Adapt
+    # FIXME(deutschmn) Review and adapt
     @classmethod
     def load(
         cls,
@@ -1446,7 +1440,7 @@ class MultihopDenseRetriever(BaseRetriever):
         infer_tokenizer_classes: bool = False,
     ):
         """
-        Load DensePassageRetriever from the specified directory.
+        Load MultihopDenseRetriever from the specified directory.
         """
         load_dir = Path(load_dir)
         dpr = cls(
