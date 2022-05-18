@@ -488,7 +488,32 @@ class BiAdaptiveModel(nn.Module):
 
 
 class BiAdaptiveSharedModel(BiAdaptiveModel):
-    # TODO(deutschmn): Assert somewhere that language_model1 == language_model2
+    """Same behaviour as BiAdaptiveModel but with shared underlying model"""
+
+    def __init__(
+        self,
+        language_model1: LanguageModel,
+        language_model2: LanguageModel,
+        prediction_heads: List[PredictionHead],
+        embeds_dropout_prob: float = 0.1,
+        device: torch.device = torch.device("cuda"),
+        lm1_output_types: Union[str, List[str]] = ["per_sequence"],
+        lm2_output_types: Union[str, List[str]] = ["per_sequence"],
+        loss_aggregation_fn: Optional[Callable] = None,
+    ):
+        if (language_model1 != language_model2) or (lm1_output_types != lm2_output_types):
+            raise ValueError("BiAdaptiveSharedModel assumes using the same models and outputs for lm1 and lm2")
+
+        super().__init__(
+            language_model1,
+            language_model2,
+            prediction_heads,
+            embeds_dropout_prob,
+            device,
+            lm1_output_types,
+            lm2_output_types,
+            loss_aggregation_fn,
+        )
 
     def save(self, save_dir: Path, lm_name: str = "lm"):
         """
