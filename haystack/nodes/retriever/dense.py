@@ -895,7 +895,7 @@ class MultihopDenseRetriever(BaseRetriever):
         prediction_head = TextSimilarityHead(
             similarity_function=similarity_function, global_loss_buffer_size=global_loss_buffer_size
         )
-        self.model: torch.nn.Module = BiAdaptiveSharedModel(
+        self.model: Union[BiAdaptiveSharedModel, DataParallel] = BiAdaptiveSharedModel(
             language_model1=self.encoder,
             language_model2=self.encoder,
             prediction_heads=[prediction_head],
@@ -903,7 +903,6 @@ class MultihopDenseRetriever(BaseRetriever):
             device=self.devices[0],
             lm1_output_types=["per_sequence"],
             lm2_output_types=["per_sequence"],
-            # TODO(deutschmn): provide `loss_aggregation_fn`?
         )
 
         self.model.connect_heads_with_processor(self.processor.tasks, require_labels=False)
@@ -1345,10 +1344,7 @@ class MultihopDenseRetriever(BaseRetriever):
         self.processor.num_hard_negatives = num_hard_negatives
         self.processor.num_positives = num_positives
 
-        if isinstance(self.model, DataParallel):
-            self.model.module.connect_heads_with_processor(self.processor.tasks, require_labels=True)
-        else:
-            self.model.connect_heads_with_processor(self.processor.tasks, require_labels=True)
+        self._model.connect_heads_with_processor(self.processor.tasks, require_labels=True)
 
         data_silo = DataSilo(
             processor=self.processor,
@@ -1360,7 +1356,7 @@ class MultihopDenseRetriever(BaseRetriever):
 
         # 5. Create an optimizer
         self.model, optimizer, lr_schedule = initialize_optimizer(
-            model=self.model,
+            model=self.model,  # type: ignore
             learning_rate=learning_rate,
             optimizer_opts={
                 "name": optimizer_name,
@@ -1392,11 +1388,22 @@ class MultihopDenseRetriever(BaseRetriever):
         # 7. Let it grow! Watch the tracked metrics live on experiment tracker (e.g. Mlflow)
         trainer.train()
 
-        self.model.save(Path(save_dir), lm_name=encoder_save_dir)
+        self._model.save(Path(save_dir), lm_name=encoder_save_dir)
         self.tokenizer.save_pretrained(Path(save_dir) / encoder_save_dir)
 
         if len(self.devices) > 1 and not isinstance(self.model, DataParallel):
             self.model = DataParallel(self.model, device_ids=self.devices)
+
+    @property
+    def _model(self) -> BiAdaptiveSharedModel:
+        """
+        Helper property that always returns the BiAdaptiveSharedModel, even if it's wrapped in a DataParallel
+        """
+        if isinstance(self.model, DataParallel):
+            assert isinstance(self.model.module, BiAdaptiveSharedModel)
+            return self.model.module
+        else:
+            return self.model
 
     def save(self, save_dir: Union[Path, str], encoder_dir: str = "encoder"):
         """
@@ -1407,7 +1414,7 @@ class MultihopDenseRetriever(BaseRetriever):
         :return: None
         """
         save_dir = Path(save_dir)
-        self.model.save(save_dir, lm_name=encoder_dir)
+        self._model.save(save_dir, lm_name=encoder_dir)
         save_dir = str(save_dir)
         self.tokenizer.save_pretrained(Path(save_dir) / encoder_dir)
 
