@@ -880,9 +880,7 @@ class MultihopDenseRetriever(BaseRetriever):
             use_auth_token=use_auth_token,
         )
         self.encoder = LanguageModel.load(
-            pretrained_model_name_or_path=embedding_model,
-            revision=model_version,
-            use_auth_token=use_auth_token,
+            pretrained_model_name_or_path=embedding_model, revision=model_version, use_auth_token=use_auth_token
         )
 
         self.processor = TextSimilarityProcessor(
