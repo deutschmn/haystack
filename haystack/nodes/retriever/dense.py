@@ -1398,28 +1398,19 @@ class MultihopDenseRetriever(BaseRetriever):
         if len(self.devices) > 1 and not isinstance(self.model, DataParallel):
             self.model = DataParallel(self.model, device_ids=self.devices)
 
-    # FIXME(deutschmn) Review and adapt
-    def save(
-        self,
-        save_dir: Union[Path, str],
-        query_encoder_dir: str = "query_encoder",
-        passage_encoder_dir: str = "passage_encoder",
-    ):
+    def save(self, save_dir: Union[Path, str], encoder_dir: str = "encoder"):
         """
         Save MultihopDenseRetriever to the specified directory.
 
         :param save_dir: Directory to save to.
-        :param query_encoder_dir: Directory in save_dir that contains query encoder model.
-        :param passage_encoder_dir: Directory in save_dir that contains passage encoder model.
+        :param encoder_dir: Directory in save_dir that contains encoder model.
         :return: None
         """
         save_dir = Path(save_dir)
-        self.model.save(save_dir, lm1_name=query_encoder_dir, lm2_name=passage_encoder_dir)
+        self.model.save(save_dir, lm_name=encoder_dir)
         save_dir = str(save_dir)
-        self.query_tokenizer.save_pretrained(save_dir + f"/{query_encoder_dir}")
-        self.passage_tokenizer.save_pretrained(save_dir + f"/{passage_encoder_dir}")
+        self.tokenizer.save_pretrained(Path(save_dir) / encoder_dir)
 
-    # FIXME(deutschmn) Review and adapt
     @classmethod
     def load(
         cls,
@@ -1432,8 +1423,7 @@ class MultihopDenseRetriever(BaseRetriever):
         embed_title: bool = True,
         use_fast_tokenizers: bool = True,
         similarity_function: str = "dot_product",
-        query_encoder_dir: str = "query_encoder",
-        passage_encoder_dir: str = "passage_encoder",
+        encoder_dir: str = "encoder",
         infer_tokenizer_classes: bool = False,
     ):
         """
@@ -1442,8 +1432,7 @@ class MultihopDenseRetriever(BaseRetriever):
         load_dir = Path(load_dir)
         dpr = cls(
             document_store=document_store,
-            query_embedding_model=Path(load_dir) / query_encoder_dir,
-            passage_embedding_model=Path(load_dir) / passage_encoder_dir,
+            embedding_model=Path(load_dir) / encoder_dir,
             max_seq_len_query=max_seq_len_query,
             max_seq_len_passage=max_seq_len_passage,
             use_gpu=use_gpu,
@@ -1453,7 +1442,7 @@ class MultihopDenseRetriever(BaseRetriever):
             similarity_function=similarity_function,
             infer_tokenizer_classes=infer_tokenizer_classes,
         )
-        logger.info(f"DPR model loaded from {load_dir}")
+        logger.info(f"MDR model loaded from {load_dir}")
 
         return dpr
 
