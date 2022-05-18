@@ -485,3 +485,26 @@ class BiAdaptiveModel(nn.Module):
             bi_adaptive_model.connect_heads_with_processor(processor.tasks)  # type: ignore
 
         return bi_adaptive_model
+
+
+class BiAdaptiveSharedModel(BiAdaptiveModel):
+    def forward_lm(self, **kwargs):
+        pooled_output = [None, None]
+        if "query_input_ids" in kwargs.keys():
+            _, pooled_output1 = self.language_model1(
+                input_ids=kwargs["query_input_ids"],
+                segment_ids=kwargs["query_segment_ids"],
+                padding_mask=kwargs["query_attention_mask"],
+            )
+            pooled_output[0] = pooled_output1
+        if "passage_input_ids" in kwargs.keys():
+            # TODO(deutschmn): taken from DPRContextEncoder -> move somewhere else?
+            max_seq_len = kwargs["passage_input_ids"].shape[-1]
+            _, pooled_output2 = self.language_model2(
+                input_ids=kwargs["passage_input_ids"].view(-1, max_seq_len),
+                segment_ids=kwargs["passage_segment_ids"].view(-1, max_seq_len),
+                padding_mask=kwargs["passage_attention_mask"].view(-1, max_seq_len),
+            )
+            pooled_output[1] = pooled_output2
+
+        return tuple(pooled_output)

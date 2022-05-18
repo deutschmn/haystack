@@ -16,10 +16,9 @@ from haystack.schema import Document
 from haystack.document_stores import BaseDocumentStore
 from haystack.nodes.retriever.base import BaseRetriever
 from haystack.nodes.retriever._embedding_encoder import _EMBEDDING_ENCODERS
-from haystack.modeling.model.adaptive_model import AdaptiveModel
 from haystack.modeling.model.tokenization import Tokenizer
 from haystack.modeling.model.language_model import LanguageModel
-from haystack.modeling.model.biadaptive_model import BiAdaptiveModel
+from haystack.modeling.model.biadaptive_model import BiAdaptiveModel, BiAdaptiveSharedModel
 from haystack.modeling.model.triadaptive_model import TriAdaptiveModel
 from haystack.modeling.model.prediction_head import TextSimilarityHead
 from haystack.modeling.data_handler.processor import TextSimilarityProcessor, TableTextSimilarityProcessor
@@ -884,7 +883,6 @@ class MultihopDenseRetriever(BaseRetriever):
             pretrained_model_name_or_path=embedding_model,
             revision=model_version,
             use_auth_token=use_auth_token,
-            language_model_class="DPRContextEncoder",  # TODO(deutschmn)  really necessary?
         )
 
         self.processor = TextSimilarityProcessor(
@@ -901,16 +899,15 @@ class MultihopDenseRetriever(BaseRetriever):
         prediction_head = TextSimilarityHead(
             similarity_function=similarity_function, global_loss_buffer_size=global_loss_buffer_size
         )
-        self.model: torch.nn.Module = AdaptiveModel(
-            language_model=self.encoder,
+        self.model: torch.nn.Module = BiAdaptiveSharedModel(
+            language_model1=self.encoder,
+            language_model2=self.encoder,
             prediction_heads=[prediction_head],
             embeds_dropout_prob=0.1,
-            # TODO(deutschmn): this is quite a hack to make AdaptiveModel compatible with
-            # DPRContextEncoder: AdaptiveModel with "per_sequence" expects first return value of
-            # language_model to be sequence_output, but DPRContextEncoder returns pooled
-            # -> with "per_token" this works, but it's probably not the way the parameter was designed
-            lm_output_types=["per_token"],
             device=self.devices[0],
+            lm1_output_types=["per_sequence"],
+            lm2_output_types=["per_sequence"],
+            # TODO(deutschmn): provide `loss_aggregation_fn`?
         )
 
         self.model.connect_heads_with_processor(self.processor.tasks, require_labels=False)
@@ -1150,19 +1147,24 @@ class MultihopDenseRetriever(BaseRetriever):
         # TODO: Currently filters are applied both for final and context documents.
         # maybe they should only apply for final docs? or make it configurable with a param?
         for batch, cur_filters in zip(batches, filters):
-            context_docs: List[List[Document]] = [[] * len(batch)]
-            for _ in range(self.num_iterations):
-                query_emb = self.embed_queries(queries=batch, contexts=context_docs)
-                cur_docs = self.document_store.query_by_embedding(
-                    query_emb=query_emb,
-                    top_k=top_k,
-                    filters=cur_filters,
-                    index=index,
-                    headers=headers,
-                    scale_score=scale_score,
-                )
-                # FIXME(deutschmn): continue implementation here by adding top result to context_docs
-                documents.append(cur_docs)
+            context_docs: List[List[Document]] = [[] for _ in range(len(batch))]
+            for it in range(self.num_iterations):
+                query_embs = self.embed_queries(queries=batch, contexts=context_docs)
+                for idx, emb in enumerate(query_embs):
+                    cur_docs = self.document_store.query_by_embedding(
+                        query_emb=emb,
+                        top_k=top_k,
+                        filters=cur_filters,
+                        index=index,
+                        headers=headers,
+                        scale_score=scale_score,
+                    )
+                    if it < self.num_iterations - 1:
+                        # add doc with highest score to context
+                        context_docs[idx].append(cur_docs[0])
+                    else:
+                        # documents in the last iteration are final results
+                        documents.append(cur_docs)
 
         if single_query:
             return documents[0]
@@ -1216,8 +1218,6 @@ class MultihopDenseRetriever(BaseRetriever):
 
                 # get logits
                 with torch.no_grad():
-                    # FIXME(deutschmn): Won't work with AdaptiveModel, since it always only returns
-                    # one embedding, not two -> use BiAdaptiveModel or own implementation?
                     query_embeddings, passage_embeddings = self.model.forward(**batch)[0]
                     if query_embeddings is not None:
                         all_embeddings["query"].append(query_embeddings.cpu().numpy())
