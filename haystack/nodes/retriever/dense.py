@@ -1269,7 +1269,6 @@ class MultihopDenseRetriever(BaseRetriever):
 
         return embeddings
 
-    # FIXME(deutschmn) Review and adapt
     def train(
         self,
         data_dir: str,

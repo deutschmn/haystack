@@ -515,7 +515,7 @@ class BiAdaptiveSharedModel(BiAdaptiveModel):
             loss_aggregation_fn,
         )
 
-    def save(self, save_dir: Path, lm_name: str = "lm"):
+    def save(self, save_dir: Path, lm_name: str = "lm"):  # type: ignore
         """
         Saves the language model weights and respective config_files in directory lm within save_dir.
 
