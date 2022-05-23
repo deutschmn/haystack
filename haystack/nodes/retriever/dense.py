@@ -813,7 +813,7 @@ class MultihopDenseRetriever(BaseRetriever):
                             {"text": "my text", "meta": {"name": "my title"}}.
         :param use_fast_tokenizers: Whether to use fast Rust tokenizers
         :param infer_tokenizer_classes: Whether to infer tokenizer class from the model config / name.
-                                        If `False`, the class always loads `DPRQuestionEncoderTokenizer` and `DPRContextEncoderTokenizer`.
+                                        If `False`, the class always loads `RobertaTokenizer`.
         :param similarity_function: Which function to apply for calculating the similarity of query and passage embeddings during training.
                                     Options: `dot_product` (Default) or `cosine`
         :param global_loss_buffer_size: Buffer size for all_gather() in DDP.
@@ -823,8 +823,7 @@ class MultihopDenseRetriever(BaseRetriever):
         :param devices: List of GPU (or CPU) devices, to limit inference to certain GPUs and not use all available ones
                         These strings will be converted into pytorch devices, so use the string notation described here:
                         https://pytorch.org/docs/stable/tensor_attributes.html?highlight=torch%20device#torch.torch.device
-                        (e.g. ["cuda:0"]). Note: as multi-GPU training is currently not implemented for DPR, training
-                        will only use the first device provided in this list.
+                        (e.g. ["cuda:0"]).
         :param use_auth_token:  API token used to download private models from Huggingface. If this parameter is set to `True`,
                                 the local token will be used, which must be previously created via `transformer-cli login`.
                                 Additional information can be found here https://huggingface.co/transformers/main_classes/model.html#transformers.PreTrainedModel.from_pretrained
@@ -852,7 +851,7 @@ class MultihopDenseRetriever(BaseRetriever):
         if document_store is None:
             logger.warning(
                 "MultihopDenseRetriever initialized without a document store. "
-                "This is fine if you are performing DPR training. "
+                "This is fine if you are performing training. "
                 "Otherwise, please provide a document store in the constructor."
             )
         elif document_store.similarity != "dot_product":
@@ -1270,130 +1269,6 @@ class MultihopDenseRetriever(BaseRetriever):
 
         return embeddings
 
-    def train(
-        self,
-        data_dir: str,
-        train_filename: str,
-        dev_filename: str = None,
-        test_filename: str = None,
-        max_samples: int = None,
-        max_processes: int = 128,
-        multiprocessing_strategy: Optional[str] = None,
-        dev_split: float = 0,
-        batch_size: int = 2,
-        embed_title: bool = True,
-        num_hard_negatives: int = 1,
-        num_positives: int = 1,
-        n_epochs: int = 3,
-        evaluate_every: int = 1000,
-        n_gpu: int = 1,
-        learning_rate: float = 1e-5,
-        epsilon: float = 1e-08,
-        weight_decay: float = 0.0,
-        num_warmup_steps: int = 100,
-        grad_acc_steps: int = 1,
-        use_amp: str = None,
-        optimizer_name: str = "AdamW",
-        optimizer_correct_bias: bool = True,
-        save_dir: str = "../saved_models/mdr",
-        encoder_save_dir: str = "encoder",
-    ):
-        """
-        train a MultihopDenseRetriever model
-        :param data_dir: Directory where training file, dev file and test file are present
-        :param train_filename: training filename
-        :param dev_filename: development set filename, file to be used by model in eval step of training
-        :param test_filename: test set filename, file to be used by model in test step after training
-        :param max_samples: maximum number of input samples to convert. Can be used for debugging a smaller dataset.
-        :param max_processes: the maximum number of processes to spawn in the multiprocessing.Pool used in DataSilo.
-                              It can be set to 1 to disable the use of multiprocessing or make debugging easier.
-        :param multiprocessing_strategy: Set the multiprocessing sharing strategy, this can be one of file_descriptor/file_system depending on your OS.
-                                         If your system has low limits for the number of open file descriptors, and you can’t raise them,
-                                         you should use the file_system strategy.
-        :param dev_split: The proportion of the train set that will sliced. Only works if dev_filename is set to None
-        :param batch_size: total number of samples in 1 batch of data
-        :param embed_title: whether to concatenate passage title with each passage. The default setting in official DPR embeds passage title with the corresponding passage
-        :param num_hard_negatives: number of hard negative passages(passages which are very similar(high score by BM25) to query but do not contain the answer
-        :param num_positives: number of positive passages
-        :param n_epochs: number of epochs to train the model on
-        :param evaluate_every: number of training steps after evaluation is run
-        :param n_gpu: number of gpus to train on
-        :param learning_rate: learning rate of optimizer
-        :param epsilon: epsilon parameter of optimizer
-        :param weight_decay: weight decay parameter of optimizer
-        :param grad_acc_steps: number of steps to accumulate gradient over before back-propagation is done
-        :param use_amp: Whether to use automatic mixed precision (AMP) or not. The options are:
-                    "O0" (FP32)
-                    "O1" (Mixed Precision)
-                    "O2" (Almost FP16)
-                    "O3" (Pure FP16).
-                    For more information, refer to: https://nvidia.github.io/apex/amp.html
-        :param optimizer_name: what optimizer to use (default: AdamW)
-        :param num_warmup_steps: number of warmup steps
-        :param optimizer_correct_bias: Whether to correct bias in optimizer
-        :param save_dir: directory where models are saved
-        :param encoder_save_dir: directory inside save_dir where encoder model files are saved
-        """
-        self.processor.embed_title = embed_title
-        self.processor.data_dir = Path(data_dir)
-        self.processor.train_filename = train_filename
-        self.processor.dev_filename = dev_filename
-        self.processor.test_filename = test_filename
-        self.processor.max_samples = max_samples
-        self.processor.dev_split = dev_split
-        self.processor.num_hard_negatives = num_hard_negatives
-        self.processor.num_positives = num_positives
-
-        self._model.connect_heads_with_processor(self.processor.tasks, require_labels=True)
-
-        data_silo = DataSilo(
-            processor=self.processor,
-            batch_size=batch_size,
-            distributed=False,
-            max_processes=max_processes,
-            multiprocessing_strategy=multiprocessing_strategy,
-        )
-
-        # 5. Create an optimizer
-        self.model, optimizer, lr_schedule = initialize_optimizer(
-            model=self.model,  # type: ignore
-            learning_rate=learning_rate,
-            optimizer_opts={
-                "name": optimizer_name,
-                "correct_bias": optimizer_correct_bias,
-                "weight_decay": weight_decay,
-                "eps": epsilon,
-            },
-            schedule_opts={"name": "LinearWarmup", "num_warmup_steps": num_warmup_steps},
-            n_batches=len(data_silo.loaders["train"]),
-            n_epochs=n_epochs,
-            grad_acc_steps=grad_acc_steps,
-            device=self.devices[0],  # Only use first device while multi-gpu training is not implemented
-            use_amp=use_amp,
-        )
-
-        # 6. Feed everything to the Trainer, which keeps care of growing our model and evaluates it from time to time
-        trainer = Trainer(
-            model=self.model,
-            optimizer=optimizer,
-            data_silo=data_silo,
-            epochs=n_epochs,
-            n_gpu=n_gpu,
-            lr_schedule=lr_schedule,
-            evaluate_every=evaluate_every,
-            device=self.devices[0],  # Only use first device while multi-gpu training is not implemented
-            use_amp=use_amp,
-        )
-
-        # 7. Let it grow! Watch the tracked metrics live on experiment tracker (e.g. Mlflow)
-        trainer.train()
-
-        self._model.save(Path(save_dir), lm_name=encoder_save_dir)
-        self.tokenizer.save_pretrained(Path(save_dir) / encoder_save_dir)
-
-        if len(self.devices) > 1 and not isinstance(self.model, DataParallel):
-            self.model = DataParallel(self.model, device_ids=self.devices)
-
     @property
     def _model(self) -> BiAdaptiveSharedModel:
         """
@@ -1437,7 +1312,7 @@ class MultihopDenseRetriever(BaseRetriever):
         Load MultihopDenseRetriever from the specified directory.
         """
         load_dir = Path(load_dir)
-        dpr = cls(
+        mdr = cls(
             document_store=document_store,
             embedding_model=Path(load_dir) / encoder_dir,
             max_seq_len_query=max_seq_len_query,
@@ -1451,7 +1326,7 @@ class MultihopDenseRetriever(BaseRetriever):
         )
         logger.info(f"MDR model loaded from {load_dir}")
 
-        return dpr
+        return mdr
 
 
 class TableTextRetriever(BaseRetriever):
