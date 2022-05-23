@@ -381,21 +381,6 @@ def test_table_text_retriever_saving_and_loading(tmp_path, retriever, document_s
     assert loaded_retriever.query_tokenizer.model_max_length == 512
 
 
-def test_mdr_training(document_store):
-    retriever = MultihopDenseRetriever(
-        document_store=document_store, embedding_model="roberta-base", use_gpu=False, embed_title=True
-    )
-
-    save_load_dir = "test_mdr_training"
-
-    retriever.train(
-        data_dir=SAMPLES_PATH / "dpr", train_filename="sample.json", n_epochs=1, n_gpu=0, save_dir=save_load_dir
-    )
-
-    # Load trained model
-    retriever = MultihopDenseRetriever.load(load_dir=save_load_dir, document_store=document_store)
-
-
 @pytest.mark.embedding_dim(128)
 def test_table_text_retriever_training(document_store):
     retriever = TableTextRetriever(
