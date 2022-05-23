@@ -1154,7 +1154,8 @@ class MultihopDenseRetriever(BaseRetriever):
                     )
                     if it < self.num_iterations - 1:
                         # add doc with highest score to context
-                        context_docs[idx].append(cur_docs[0])
+                        if len(cur_docs) > 0:
+                            context_docs[idx].append(cur_docs[0])
                     else:
                         # documents in the last iteration are final results
                         documents.append(cur_docs)
