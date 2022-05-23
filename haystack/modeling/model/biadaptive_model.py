@@ -539,7 +539,6 @@ class BiAdaptiveSharedModel(BiAdaptiveModel):
             )
             pooled_output[0] = pooled_output1
         if "passage_input_ids" in kwargs.keys():
-            # TODO(deutschmn): taken from DPRContextEncoder -> move somewhere else?
             max_seq_len = kwargs["passage_input_ids"].shape[-1]
             _, pooled_output2 = self.language_model2(
                 input_ids=kwargs["passage_input_ids"].view(-1, max_seq_len),

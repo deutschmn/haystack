@@ -673,7 +673,7 @@ def get_retriever(retriever_type, document_store):
     elif retriever_type == "mdr":
         retriever = MultihopDenseRetriever(
             document_store=document_store,
-            embedding_model="roberta-base",  # TODO(deutschmn): different model?
+            embedding_model="facebook/dpr-ctx_encoder-single-nq-base",
             use_gpu=False,
             embed_title=True,
         )

@@ -761,7 +761,7 @@ class MultihopDenseRetriever(BaseRetriever):
     def __init__(
         self,
         document_store: BaseDocumentStore,
-        embedding_model: Union[Path, str] = "roberta-base",  # TODO(deutschmn) different default?
+        embedding_model: Union[Path, str] = "facebook/dpr-ctx_encoder-single-nq-base",
         model_version: Optional[str] = None,
         num_iterations: int = 2,
         max_seq_len_query: int = 64,
@@ -788,7 +788,7 @@ class MultihopDenseRetriever(BaseRetriever):
                 ```python
                 |    # remote model
                 |    MultihopDenseRetriever(document_store=your_doc_store,
-                |                          embedding_model="roberta-base") # TODO(deutschmn) different default? - see above
+                |                          embedding_model="facebook/dpr-ctx_encoder-single-nq-base")
                 |    # or from local path
                 |    MultihopDenseRetriever(document_store=your_doc_store,
                 |                          embedding_model="model_directory/encoder")
@@ -797,7 +797,7 @@ class MultihopDenseRetriever(BaseRetriever):
         :param document_store: An instance of DocumentStore from which to retrieve documents.
         :param query_embedding_model: Local path or remote name of encoder checkpoint. The format equals the
                                       one used by hugging-face transformers' modelhub models
-                                      Currently available remote names: ``"roberta-base"`` # TODO(deutschmn) different default? - see above
+                                      Currently available remote names: ``"facebook/dpr-ctx_encoder-single-nq-base"``
         :param model_version: The version of model to use from the HuggingFace model hub. Can be tag name, branch name, or commit hash.
         :param num_iterations: The number of times passages are retrieved, i.e., the number of hops (Defaults to 2.)
         :param max_seq_len_query: Longest length of each query sequence. Maximum number of tokens for the query text. Longer ones will be cut down."
@@ -856,7 +856,7 @@ class MultihopDenseRetriever(BaseRetriever):
                 "Otherwise, please provide a document store in the constructor."
             )
         elif document_store.similarity != "dot_product":
-            # TODO(deutschmn): Check this warning from DPR - should not be necessary for MDR, right?
+            # TODO: Check this warning from DPR - should not be necessary for MDR, right?
             logger.warning(
                 f"You are using a MultihopDenseRetriever model with the {document_store.similarity} function. "
                 "We recommend you use dot_product instead. "
@@ -864,7 +864,7 @@ class MultihopDenseRetriever(BaseRetriever):
             )
 
         self.infer_tokenizer_classes = infer_tokenizer_classes
-        tokenizer_default_class: Optional[str] = "RobertaTokenizer"  # TODO(deutschmn) different default? - see above
+        tokenizer_default_class: Optional[str] = "RobertaTokenizer"
         if self.infer_tokenizer_classes:
             tokenizer_default_class = None
 
