@@ -995,7 +995,7 @@ class MultihopDenseRetriever(BaseRetriever):
         """
         return self.retrieve_batch(  # type: ignore
             queries=query,
-            filters=filters,
+            filters=[filters],
             top_k=top_k,
             index=index,
             headers=headers,
