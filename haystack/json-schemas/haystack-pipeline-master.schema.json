@@ -2890,7 +2890,7 @@
             },
             "embedding_model": {
               "title": "Embedding Model",
-              "default": "roberta-base",
+              "default": "facebook/dpr-ctx_encoder-single-nq-base",
               "anyOf": [
                 {
                   "type": "string",

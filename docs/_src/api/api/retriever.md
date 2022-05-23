@@ -886,7 +886,7 @@ Xiong, Wenhan, et. al. (2020): "Answering complex open-domain questions with mul
 #### MultihopDenseRetriever.\_\_init\_\_
 
 ```python
-def __init__(document_store: BaseDocumentStore, embedding_model: Union[Path, str] = "roberta-base", model_version: Optional[str] = None, num_iterations: int = 2, max_seq_len_query: int = 64, max_seq_len_passage: int = 256, top_k: int = 10, use_gpu: bool = True, batch_size: int = 16, embed_title: bool = True, use_fast_tokenizers: bool = True, infer_tokenizer_classes: bool = False, similarity_function: str = "dot_product", global_loss_buffer_size: int = 150000, progress_bar: bool = True, devices: Optional[List[Union[str, torch.device]]] = None, use_auth_token: Optional[Union[str, bool]] = None, scale_score: bool = True)
+def __init__(document_store: BaseDocumentStore, embedding_model: Union[Path, str] = "facebook/dpr-ctx_encoder-single-nq-base", model_version: Optional[str] = None, num_iterations: int = 2, max_seq_len_query: int = 64, max_seq_len_passage: int = 256, top_k: int = 10, use_gpu: bool = True, batch_size: int = 16, embed_title: bool = True, use_fast_tokenizers: bool = True, infer_tokenizer_classes: bool = False, similarity_function: str = "dot_product", global_loss_buffer_size: int = 150000, progress_bar: bool = True, devices: Optional[List[Union[str, torch.device]]] = None, use_auth_token: Optional[Union[str, bool]] = None, scale_score: bool = True)
 ```
 
 Init the Retriever incl. the encoder model from a local or remote model checkpoint.
@@ -898,7 +898,7 @@ The checkpoint format matches huggingface transformers' model format
         ```python
         |    # remote model
         |    MultihopDenseRetriever(document_store=your_doc_store,
-        |                          embedding_model="roberta-base") # TODO(deutschmn) different default? - see above
+        |                          embedding_model="facebook/dpr-ctx_encoder-single-nq-base")
         |    # or from local path
         |    MultihopDenseRetriever(document_store=your_doc_store,
         |                          embedding_model="model_directory/encoder")
@@ -909,7 +909,7 @@ The checkpoint format matches huggingface transformers' model format
 - `document_store`: An instance of DocumentStore from which to retrieve documents.
 - `query_embedding_model`: Local path or remote name of encoder checkpoint. The format equals the
 one used by hugging-face transformers' modelhub models
-Currently available remote names: ``"roberta-base"`` # TODO(deutschmn) different default? - see above
+Currently available remote names: ``"facebook/dpr-ctx_encoder-single-nq-base"``
 - `model_version`: The version of model to use from the HuggingFace model hub. Can be tag name, branch name, or commit hash.
 - `num_iterations`: The number of times passages are retrieved, i.e., the number of hops (Defaults to 2.)
 - `max_seq_len_query`: Longest length of each query sequence. Maximum number of tokens for the query text. Longer ones will be cut down."
