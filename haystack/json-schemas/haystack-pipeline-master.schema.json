@@ -2890,7 +2890,7 @@
             },
             "embedding_model": {
               "title": "Embedding Model",
-              "default": "facebook/dpr-ctx_encoder-single-nq-base",
+              "default": "deutschmann/mdr_roberta_q_encoder",
               "anyOf": [
                 {
                   "type": "string",
