@@ -925,7 +925,7 @@ before writing them to the DocumentStore like this:
 {"text": "my text", "meta": {"name": "my title"}}.
 - `use_fast_tokenizers`: Whether to use fast Rust tokenizers
 - `infer_tokenizer_classes`: Whether to infer tokenizer class from the model config / name.
-If `False`, the class always loads `DPRQuestionEncoderTokenizer` and `DPRContextEncoderTokenizer`.
+If `False`, the class always loads `RobertaTokenizer`.
 - `similarity_function`: Which function to apply for calculating the similarity of query and passage embeddings during training.
 Options: `dot_product` (Default) or `cosine`
 - `global_loss_buffer_size`: Buffer size for all_gather() in DDP.
@@ -935,8 +935,7 @@ Can be helpful to disable in production deployments to keep the logs clean.
 - `devices`: List of GPU (or CPU) devices, to limit inference to certain GPUs and not use all available ones
 These strings will be converted into pytorch devices, so use the string notation described here:
 https://pytorch.org/docs/stable/tensor_attributes.html?highlight=torch%20device#torch.torch.device
-(e.g. ["cuda:0"]). Note: as multi-GPU training is currently not implemented for DPR, training
-will only use the first device provided in this list.
+(e.g. ["cuda:0"]).
 - `use_auth_token`: API token used to download private models from Huggingface. If this parameter is set to `True`,
 the local token will be used, which must be previously created via `transformer-cli login`.
 Additional information can be found here https://huggingface.co/transformers/main_classes/model.html#transformers.PreTrainedModel.from_pretrained
@@ -1160,52 +1159,6 @@ Create embeddings for a list of documents using the passage encoder
 **Returns**:
 
 Embeddings of documents / passages shape (batch_size, embedding_dim)
-
-<a id="dense.MultihopDenseRetriever.train"></a>
-
-#### MultihopDenseRetriever.train
-
-```python
-def train(data_dir: str, train_filename: str, dev_filename: str = None, test_filename: str = None, max_samples: int = None, max_processes: int = 128, multiprocessing_strategy: Optional[str] = None, dev_split: float = 0, batch_size: int = 2, embed_title: bool = True, num_hard_negatives: int = 1, num_positives: int = 1, n_epochs: int = 3, evaluate_every: int = 1000, n_gpu: int = 1, learning_rate: float = 1e-5, epsilon: float = 1e-08, weight_decay: float = 0.0, num_warmup_steps: int = 100, grad_acc_steps: int = 1, use_amp: str = None, optimizer_name: str = "AdamW", optimizer_correct_bias: bool = True, save_dir: str = "../saved_models/mdr", encoder_save_dir: str = "encoder")
-```
-
-train a MultihopDenseRetriever model
-
-**Arguments**:
-
-- `data_dir`: Directory where training file, dev file and test file are present
-- `train_filename`: training filename
-- `dev_filename`: development set filename, file to be used by model in eval step of training
-- `test_filename`: test set filename, file to be used by model in test step after training
-- `max_samples`: maximum number of input samples to convert. Can be used for debugging a smaller dataset.
-- `max_processes`: the maximum number of processes to spawn in the multiprocessing.Pool used in DataSilo.
-It can be set to 1 to disable the use of multiprocessing or make debugging easier.
-- `multiprocessing_strategy`: Set the multiprocessing sharing strategy, this can be one of file_descriptor/file_system depending on your OS.
-If your system has low limits for the number of open file descriptors, and you can’t raise them,
-you should use the file_system strategy.
-- `dev_split`: The proportion of the train set that will sliced. Only works if dev_filename is set to None
-- `batch_size`: total number of samples in 1 batch of data
-- `embed_title`: whether to concatenate passage title with each passage. The default setting in official DPR embeds passage title with the corresponding passage
-- `num_hard_negatives`: number of hard negative passages(passages which are very similar(high score by BM25) to query but do not contain the answer
-- `num_positives`: number of positive passages
-- `n_epochs`: number of epochs to train the model on
-- `evaluate_every`: number of training steps after evaluation is run
-- `n_gpu`: number of gpus to train on
-- `learning_rate`: learning rate of optimizer
-- `epsilon`: epsilon parameter of optimizer
-- `weight_decay`: weight decay parameter of optimizer
-- `grad_acc_steps`: number of steps to accumulate gradient over before back-propagation is done
-- `use_amp`: Whether to use automatic mixed precision (AMP) or not. The options are:
-"O0" (FP32)
-"O1" (Mixed Precision)
-"O2" (Almost FP16)
-"O3" (Pure FP16).
-For more information, refer to: https://nvidia.github.io/apex/amp.html
-- `optimizer_name`: what optimizer to use (default: AdamW)
-- `num_warmup_steps`: number of warmup steps
-- `optimizer_correct_bias`: Whether to correct bias in optimizer
-- `save_dir`: directory where models are saved
-- `encoder_save_dir`: directory inside save_dir where encoder model files are saved
 
 <a id="dense.MultihopDenseRetriever.save"></a>
 
