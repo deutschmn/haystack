@@ -867,6 +867,376 @@ def load(cls, load_dir: Union[Path, str], document_store: BaseDocumentStore, max
 
 Load DensePassageRetriever from the specified directory.
 
+<a id="dense.MultihopDenseRetriever"></a>
+
+## MultihopDenseRetriever
+
+```python
+class MultihopDenseRetriever(BaseRetriever)
+```
+
+Retriever that applies iterative retrieval using a shared encoder for query and passage.
+See original paper for more details:
+
+Xiong, Wenhan, et. al. (2020): "Answering complex open-domain questions with multi-hop dense retrieval"
+(https://arxiv.org/abs/2009.12756)
+
+<a id="dense.MultihopDenseRetriever.__init__"></a>
+
+#### MultihopDenseRetriever.\_\_init\_\_
+
+```python
+def __init__(document_store: BaseDocumentStore, embedding_model: Union[Path, str] = "roberta-base", model_version: Optional[str] = None, num_iterations: int = 2, max_seq_len_query: int = 64, max_seq_len_passage: int = 256, top_k: int = 10, use_gpu: bool = True, batch_size: int = 16, embed_title: bool = True, use_fast_tokenizers: bool = True, infer_tokenizer_classes: bool = False, similarity_function: str = "dot_product", global_loss_buffer_size: int = 150000, progress_bar: bool = True, devices: Optional[List[Union[str, torch.device]]] = None, use_auth_token: Optional[Union[str, bool]] = None, scale_score: bool = True)
+```
+
+Init the Retriever incl. the encoder model from a local or remote model checkpoint.
+
+The checkpoint format matches huggingface transformers' model format
+
+**Example:**
+
+        ```python
+        |    # remote model
+        |    MultihopDenseRetriever(document_store=your_doc_store,
+        |                          embedding_model="roberta-base") # TODO(deutschmn) different default? - see above
+        |    # or from local path
+        |    MultihopDenseRetriever(document_store=your_doc_store,
+        |                          embedding_model="model_directory/encoder")
+        ```
+
+**Arguments**:
+
+- `document_store`: An instance of DocumentStore from which to retrieve documents.
+- `query_embedding_model`: Local path or remote name of encoder checkpoint. The format equals the
+one used by hugging-face transformers' modelhub models
+Currently available remote names: ``"roberta-base"`` # TODO(deutschmn) different default? - see above
+- `model_version`: The version of model to use from the HuggingFace model hub. Can be tag name, branch name, or commit hash.
+- `num_iterations`: The number of times passages are retrieved, i.e., the number of hops (Defaults to 2.)
+- `max_seq_len_query`: Longest length of each query sequence. Maximum number of tokens for the query text. Longer ones will be cut down."
+- `max_seq_len_passage`: Longest length of each passage/context sequence. Maximum number of tokens for the passage text. Longer ones will be cut down."
+- `top_k`: How many documents to return per query.
+- `use_gpu`: Whether to use all available GPUs or the CPU. Falls back on CPU if no GPU is available.
+- `batch_size`: Number of questions or passages to encode at once. In case of multiple gpus, this will be the total batch size.
+- `embed_title`: Whether to concatenate title and passage to a text pair that is then used to create the embedding.
+This is the approach used in the original paper and is likely to improve performance if your
+titles contain meaningful information for retrieval (topic, entities etc.) .
+The title is expected to be present in doc.meta["name"] and can be supplied in the documents
+before writing them to the DocumentStore like this:
+{"text": "my text", "meta": {"name": "my title"}}.
+- `use_fast_tokenizers`: Whether to use fast Rust tokenizers
+- `infer_tokenizer_classes`: Whether to infer tokenizer class from the model config / name.
+If `False`, the class always loads `DPRQuestionEncoderTokenizer` and `DPRContextEncoderTokenizer`.
+- `similarity_function`: Which function to apply for calculating the similarity of query and passage embeddings during training.
+Options: `dot_product` (Default) or `cosine`
+- `global_loss_buffer_size`: Buffer size for all_gather() in DDP.
+Increase if errors like "encoded data exceeds max_size ..." come up
+- `progress_bar`: Whether to show a tqdm progress bar or not.
+Can be helpful to disable in production deployments to keep the logs clean.
+- `devices`: List of GPU (or CPU) devices, to limit inference to certain GPUs and not use all available ones
+These strings will be converted into pytorch devices, so use the string notation described here:
+https://pytorch.org/docs/stable/tensor_attributes.html?highlight=torch%20device#torch.torch.device
+(e.g. ["cuda:0"]). Note: as multi-GPU training is currently not implemented for DPR, training
+will only use the first device provided in this list.
+- `use_auth_token`: API token used to download private models from Huggingface. If this parameter is set to `True`,
+the local token will be used, which must be previously created via `transformer-cli login`.
+Additional information can be found here https://huggingface.co/transformers/main_classes/model.html#transformers.PreTrainedModel.from_pretrained
+- `scale_score`: Whether to scale the similarity score to the unit interval (range of [0,1]).
+If true (default) similarity scores (e.g. cosine or dot_product) which naturally have a different value range will be scaled to a range of [0,1], where 1 means extremely relevant.
+Otherwise raw similarity scores (e.g. cosine or dot_product) will be used.
+
+<a id="dense.MultihopDenseRetriever.retrieve"></a>
+
+#### MultihopDenseRetriever.retrieve
+
+```python
+def retrieve(query: str, filters: Optional[Dict[str, Union[Dict, List, str, int, float, bool]]] = None, top_k: Optional[int] = None, index: str = None, headers: Optional[Dict[str, str]] = None, scale_score: bool = None) -> List[Document]
+```
+
+Scan through documents in DocumentStore and return a small number documents
+
+that are most relevant to the query.
+
+**Arguments**:
+
+- `query`: The query
+- `filters`: Optional filters to narrow down the search space to documents whose metadata fulfill certain
+conditions.
+Filters are defined as nested dictionaries. The keys of the dictionaries can be a logical
+operator (`"$and"`, `"$or"`, `"$not"`), a comparison operator (`"$eq"`, `"$in"`, `"$gt"`,
+`"$gte"`, `"$lt"`, `"$lte"`) or a metadata field name.
+Logical operator keys take a dictionary of metadata field names and/or logical operators as
+value. Metadata field names take a dictionary of comparison operators as value. Comparison
+operator keys take a single value or (in case of `"$in"`) a list of values as value.
+If no logical operator is provided, `"$and"` is used as default operation. If no comparison
+operator is provided, `"$eq"` (or `"$in"` if the comparison value is a list) is used as default
+operation.
+
+    __Example__:
+    ```python
+    filters = {
+        "$and": {
+            "type": {"$eq": "article"},
+            "date": {"$gte": "2015-01-01", "$lt": "2021-01-01"},
+            "rating": {"$gte": 3},
+            "$or": {
+                "genre": {"$in": ["economy", "politics"]},
+                "publisher": {"$eq": "nytimes"}
+            }
+        }
+    }
+    # or simpler using default operators
+    filters = {
+        "type": "article",
+        "date": {"$gte": "2015-01-01", "$lt": "2021-01-01"},
+        "rating": {"$gte": 3},
+        "$or": {
+            "genre": ["economy", "politics"],
+            "publisher": "nytimes"
+        }
+    }
+    ```
+
+    To use the same logical operator multiple times on the same level, logical operators take
+    optionally a list of dictionaries as value.
+
+    __Example__:
+    ```python
+    filters = {
+        "$or": [
+            {
+                "$and": {
+                    "Type": "News Paper",
+                    "Date": {
+                        "$lt": "2019-01-01"
+                    }
+                }
+            },
+            {
+                "$and": {
+                    "Type": "Blog Post",
+                    "Date": {
+                        "$gte": "2019-01-01"
+                    }
+                }
+            }
+        ]
+    }
+    ```
+- `top_k`: How many documents to return per query.
+- `index`: The name of the index in the DocumentStore from which to retrieve documents
+- `scale_score`: Whether to scale the similarity score to the unit interval (range of [0,1]).
+If true similarity scores (e.g. cosine or dot_product) which naturally have a different value range will be scaled to a range of [0,1], where 1 means extremely relevant.
+Otherwise raw similarity scores (e.g. cosine or dot_product) will be used.
+
+<a id="dense.MultihopDenseRetriever.retrieve_batch"></a>
+
+#### MultihopDenseRetriever.retrieve\_batch
+
+```python
+def retrieve_batch(queries: Union[str, List[str]], filters: Optional[
+            Union[
+                Dict[str, Union[Dict, List, str, int, float, bool]],
+                List[Dict[str, Union[Dict, List, str, int, float, bool]]],
+            ]
+        ] = None, top_k: Optional[int] = None, index: str = None, headers: Optional[Dict[str, str]] = None, batch_size: Optional[int] = None, scale_score: bool = None) -> Union[List[Document], List[List[Document]]]
+```
+
+Scan through documents in DocumentStore and return a small number documents
+
+that are most relevant to the supplied queries.
+
+If you supply a single query, a single list of Documents is returned. If you supply a list of queries, a list of
+lists of Documents (one per query) is returned.
+
+**Arguments**:
+
+- `queries`: Single query string or list of queries.
+- `filters`: Optional filters to narrow down the search space to documents whose metadata fulfill certain
+conditions. Can be a single filter that will be applied to each query or a list of filters
+(one filter per query).
+
+Filters are defined as nested dictionaries. The keys of the dictionaries can be a logical
+operator (`"$and"`, `"$or"`, `"$not"`), a comparison operator (`"$eq"`, `"$in"`, `"$gt"`,
+`"$gte"`, `"$lt"`, `"$lte"`) or a metadata field name.
+Logical operator keys take a dictionary of metadata field names and/or logical operators as
+value. Metadata field names take a dictionary of comparison operators as value. Comparison
+operator keys take a single value or (in case of `"$in"`) a list of values as value.
+If no logical operator is provided, `"$and"` is used as default operation. If no comparison
+operator is provided, `"$eq"` (or `"$in"` if the comparison value is a list) is used as default
+operation.
+
+    __Example__:
+    ```python
+    filters = {
+        "$and": {
+            "type": {"$eq": "article"},
+            "date": {"$gte": "2015-01-01", "$lt": "2021-01-01"},
+            "rating": {"$gte": 3},
+            "$or": {
+                "genre": {"$in": ["economy", "politics"]},
+                "publisher": {"$eq": "nytimes"}
+            }
+        }
+    }
+    # or simpler using default operators
+    filters = {
+        "type": "article",
+        "date": {"$gte": "2015-01-01", "$lt": "2021-01-01"},
+        "rating": {"$gte": 3},
+        "$or": {
+            "genre": ["economy", "politics"],
+            "publisher": "nytimes"
+        }
+    }
+    ```
+
+    To use the same logical operator multiple times on the same level, logical operators take
+    optionally a list of dictionaries as value.
+
+    __Example__:
+    ```python
+    filters = {
+        "$or": [
+            {
+                "$and": {
+                    "Type": "News Paper",
+                    "Date": {
+                        "$lt": "2019-01-01"
+                    }
+                }
+            },
+            {
+                "$and": {
+                    "Type": "Blog Post",
+                    "Date": {
+                        "$gte": "2019-01-01"
+                    }
+                }
+            }
+        ]
+    }
+    ```
+- `top_k`: How many documents to return per query.
+- `index`: The name of the index in the DocumentStore from which to retrieve documents
+- `batch_size`: Number of queries to embed at a time.
+- `scale_score`: Whether to scale the similarity score to the unit interval (range of [0,1]).
+If true similarity scores (e.g. cosine or dot_product) which naturally have a different
+value range will be scaled to a range of [0,1], where 1 means extremely relevant.
+Otherwise raw similarity scores (e.g. cosine or dot_product) will be used.
+
+<a id="dense.MultihopDenseRetriever.embed_queries"></a>
+
+#### MultihopDenseRetriever.embed\_queries
+
+```python
+def embed_queries(queries: List[str], contexts: List[List[Document]]) -> List[np.ndarray]
+```
+
+Create embeddings for a list of queries using the query encoder
+
+**Arguments**:
+
+- `queries`: Queries to embed
+- `contexts`: Context documents
+
+**Returns**:
+
+Embeddings, one per input queries
+
+<a id="dense.MultihopDenseRetriever.embed_documents"></a>
+
+#### MultihopDenseRetriever.embed\_documents
+
+```python
+def embed_documents(docs: List[Document]) -> List[np.ndarray]
+```
+
+Create embeddings for a list of documents using the passage encoder
+
+**Arguments**:
+
+- `docs`: List of Document objects used to represent documents / passages in a standardized way within Haystack.
+
+**Returns**:
+
+Embeddings of documents / passages shape (batch_size, embedding_dim)
+
+<a id="dense.MultihopDenseRetriever.train"></a>
+
+#### MultihopDenseRetriever.train
+
+```python
+def train(data_dir: str, train_filename: str, dev_filename: str = None, test_filename: str = None, max_samples: int = None, max_processes: int = 128, multiprocessing_strategy: Optional[str] = None, dev_split: float = 0, batch_size: int = 2, embed_title: bool = True, num_hard_negatives: int = 1, num_positives: int = 1, n_epochs: int = 3, evaluate_every: int = 1000, n_gpu: int = 1, learning_rate: float = 1e-5, epsilon: float = 1e-08, weight_decay: float = 0.0, num_warmup_steps: int = 100, grad_acc_steps: int = 1, use_amp: str = None, optimizer_name: str = "AdamW", optimizer_correct_bias: bool = True, save_dir: str = "../saved_models/mdr", encoder_save_dir: str = "encoder")
+```
+
+train a MultihopDenseRetriever model
+
+**Arguments**:
+
+- `data_dir`: Directory where training file, dev file and test file are present
+- `train_filename`: training filename
+- `dev_filename`: development set filename, file to be used by model in eval step of training
+- `test_filename`: test set filename, file to be used by model in test step after training
+- `max_samples`: maximum number of input samples to convert. Can be used for debugging a smaller dataset.
+- `max_processes`: the maximum number of processes to spawn in the multiprocessing.Pool used in DataSilo.
+It can be set to 1 to disable the use of multiprocessing or make debugging easier.
+- `multiprocessing_strategy`: Set the multiprocessing sharing strategy, this can be one of file_descriptor/file_system depending on your OS.
+If your system has low limits for the number of open file descriptors, and you can’t raise them,
+you should use the file_system strategy.
+- `dev_split`: The proportion of the train set that will sliced. Only works if dev_filename is set to None
+- `batch_size`: total number of samples in 1 batch of data
+- `embed_title`: whether to concatenate passage title with each passage. The default setting in official DPR embeds passage title with the corresponding passage
+- `num_hard_negatives`: number of hard negative passages(passages which are very similar(high score by BM25) to query but do not contain the answer
+- `num_positives`: number of positive passages
+- `n_epochs`: number of epochs to train the model on
+- `evaluate_every`: number of training steps after evaluation is run
+- `n_gpu`: number of gpus to train on
+- `learning_rate`: learning rate of optimizer
+- `epsilon`: epsilon parameter of optimizer
+- `weight_decay`: weight decay parameter of optimizer
+- `grad_acc_steps`: number of steps to accumulate gradient over before back-propagation is done
+- `use_amp`: Whether to use automatic mixed precision (AMP) or not. The options are:
+"O0" (FP32)
+"O1" (Mixed Precision)
+"O2" (Almost FP16)
+"O3" (Pure FP16).
+For more information, refer to: https://nvidia.github.io/apex/amp.html
+- `optimizer_name`: what optimizer to use (default: AdamW)
+- `num_warmup_steps`: number of warmup steps
+- `optimizer_correct_bias`: Whether to correct bias in optimizer
+- `save_dir`: directory where models are saved
+- `encoder_save_dir`: directory inside save_dir where encoder model files are saved
+
+<a id="dense.MultihopDenseRetriever.save"></a>
+
+#### MultihopDenseRetriever.save
+
+```python
+def save(save_dir: Union[Path, str], encoder_dir: str = "encoder")
+```
+
+Save MultihopDenseRetriever to the specified directory.
+
+**Arguments**:
+
+- `save_dir`: Directory to save to.
+- `encoder_dir`: Directory in save_dir that contains encoder model.
+
+**Returns**:
+
+None
+
+<a id="dense.MultihopDenseRetriever.load"></a>
+
+#### MultihopDenseRetriever.load
+
+```python
+@classmethod
+def load(cls, load_dir: Union[Path, str], document_store: BaseDocumentStore, max_seq_len_query: int = 64, max_seq_len_passage: int = 256, use_gpu: bool = True, batch_size: int = 16, embed_title: bool = True, use_fast_tokenizers: bool = True, similarity_function: str = "dot_product", encoder_dir: str = "encoder", infer_tokenizer_classes: bool = False)
+```
+
+Load MultihopDenseRetriever from the specified directory.
+
 <a id="dense.TableTextRetriever"></a>
 
 ## TableTextRetriever
