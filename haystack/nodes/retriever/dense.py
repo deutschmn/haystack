@@ -18,7 +18,7 @@ from haystack.nodes.retriever.base import BaseRetriever
 from haystack.nodes.retriever._embedding_encoder import _EMBEDDING_ENCODERS
 from haystack.modeling.model.tokenization import Tokenizer
 from haystack.modeling.model.language_model import LanguageModel
-from haystack.modeling.model.biadaptive_model import BiAdaptiveModel, BiAdaptiveSharedModel
+from haystack.modeling.model.biadaptive_model import BiAdaptiveModel
 from haystack.modeling.model.triadaptive_model import TriAdaptiveModel
 from haystack.modeling.model.prediction_head import TextSimilarityHead
 from haystack.modeling.data_handler.processor import TextSimilarityProcessor, TableTextSimilarityProcessor
@@ -747,586 +747,6 @@ class DensePassageRetriever(BaseRetriever):
         logger.info(f"DPR model loaded from {load_dir}")
 
         return dpr
-
-
-class MultihopDenseRetriever(BaseRetriever):
-    """
-    Retriever that applies iterative retrieval using a shared encoder for query and passage.
-    See original paper for more details:
-
-    Xiong, Wenhan, et. al. (2020): "Answering complex open-domain questions with multi-hop dense retrieval"
-    (https://arxiv.org/abs/2009.12756)
-    """
-
-    def __init__(
-        self,
-        document_store: BaseDocumentStore,
-        embedding_model: Union[Path, str] = "deutschmann/mdr_roberta_q_encoder",
-        model_version: Optional[str] = None,
-        num_iterations: int = 2,
-        max_seq_len_query: int = 64,
-        max_seq_len_passage: int = 256,
-        top_k: int = 10,
-        use_gpu: bool = True,
-        batch_size: int = 16,
-        embed_title: bool = True,
-        use_fast_tokenizers: bool = True,
-        infer_tokenizer_classes: bool = False,
-        similarity_function: str = "dot_product",
-        global_loss_buffer_size: int = 150000,
-        progress_bar: bool = True,
-        devices: Optional[List[Union[str, torch.device]]] = None,
-        use_auth_token: Optional[Union[str, bool]] = None,
-        scale_score: bool = True,
-    ):
-        """
-        Init the Retriever incl. the encoder model from a local or remote model checkpoint.
-        The checkpoint format matches huggingface transformers' model format
-
-        **Example:**
-
-                ```python
-                |    # remote model
-                |    MultihopDenseRetriever(document_store=your_doc_store,
-                |                          embedding_model="deutschmann/mdr_roberta_q_encoder")
-                |    # or from local path
-                |    MultihopDenseRetriever(document_store=your_doc_store,
-                |                          embedding_model="model_directory/encoder")
-                ```
-
-        :param document_store: An instance of DocumentStore from which to retrieve documents.
-        :param query_embedding_model: Local path or remote name of encoder checkpoint. The format equals the
-                                      one used by hugging-face transformers' modelhub models
-                                      Currently available remote names: ``"deutschmann/mdr_roberta_q_encoder", "facebook/dpr-ctx_encoder-single-nq-base"``
-        :param model_version: The version of model to use from the HuggingFace model hub. Can be tag name, branch name, or commit hash.
-        :param num_iterations: The number of times passages are retrieved, i.e., the number of hops (Defaults to 2.)
-        :param max_seq_len_query: Longest length of each query sequence. Maximum number of tokens for the query text. Longer ones will be cut down."
-        :param max_seq_len_passage: Longest length of each passage/context sequence. Maximum number of tokens for the passage text. Longer ones will be cut down."
-        :param top_k: How many documents to return per query.
-        :param use_gpu: Whether to use all available GPUs or the CPU. Falls back on CPU if no GPU is available.
-        :param batch_size: Number of questions or passages to encode at once. In case of multiple gpus, this will be the total batch size.
-        :param embed_title: Whether to concatenate title and passage to a text pair that is then used to create the embedding.
-                            This is the approach used in the original paper and is likely to improve performance if your
-                            titles contain meaningful information for retrieval (topic, entities etc.) .
-                            The title is expected to be present in doc.meta["name"] and can be supplied in the documents
-                            before writing them to the DocumentStore like this:
-                            {"text": "my text", "meta": {"name": "my title"}}.
-        :param use_fast_tokenizers: Whether to use fast Rust tokenizers
-        :param infer_tokenizer_classes: Whether to infer tokenizer class from the model config / name.
-                                        If `False`, the class always loads `RobertaTokenizer`.
-        :param similarity_function: Which function to apply for calculating the similarity of query and passage embeddings during training.
-                                    Options: `dot_product` (Default) or `cosine`
-        :param global_loss_buffer_size: Buffer size for all_gather() in DDP.
-                                        Increase if errors like "encoded data exceeds max_size ..." come up
-        :param progress_bar: Whether to show a tqdm progress bar or not.
-                             Can be helpful to disable in production deployments to keep the logs clean.
-        :param devices: List of GPU (or CPU) devices, to limit inference to certain GPUs and not use all available ones
-                        These strings will be converted into pytorch devices, so use the string notation described here:
-                        https://pytorch.org/docs/stable/tensor_attributes.html?highlight=torch%20device#torch.torch.device
-                        (e.g. ["cuda:0"]).
-        :param use_auth_token:  API token used to download private models from Huggingface. If this parameter is set to `True`,
-                                the local token will be used, which must be previously created via `transformer-cli login`.
-                                Additional information can be found here https://huggingface.co/transformers/main_classes/model.html#transformers.PreTrainedModel.from_pretrained
-        :param scale_score: Whether to scale the similarity score to the unit interval (range of [0,1]).
-                            If true (default) similarity scores (e.g. cosine or dot_product) which naturally have a different value range will be scaled to a range of [0,1], where 1 means extremely relevant.
-                            Otherwise raw similarity scores (e.g. cosine or dot_product) will be used.
-        """
-        super().__init__()
-
-        if devices is not None:
-            self.devices = [torch.device(device) for device in devices]
-        else:
-            self.devices, _ = initialize_device_settings(use_cuda=use_gpu, multi_gpu=True)
-
-        if batch_size < len(self.devices):
-            logger.warning("Batch size is less than the number of devices. All gpus will not be utilized.")
-
-        self.document_store = document_store
-        self.batch_size = batch_size
-        self.progress_bar = progress_bar
-        self.top_k = top_k
-        self.scale_score = scale_score
-        self.num_iterations = num_iterations
-
-        if document_store is None:
-            logger.warning(
-                "MultihopDenseRetriever initialized without a document store. "
-                "This is fine if you are performing training. "
-                "Otherwise, please provide a document store in the constructor."
-            )
-        elif document_store.similarity != "dot_product":
-            # TODO: Check this warning from DPR - should not be necessary for MDR, right?
-            logger.warning(
-                f"You are using a MultihopDenseRetriever model with the {document_store.similarity} function. "
-                "We recommend you use dot_product instead. "
-                "This can be set when initializing the DocumentStore"
-            )
-
-        self.infer_tokenizer_classes = infer_tokenizer_classes
-        tokenizer_default_class: Optional[str] = "RobertaTokenizer"
-        if self.infer_tokenizer_classes:
-            tokenizer_default_class = None
-
-        # Init & Load Encoders
-        self.tokenizer = Tokenizer.load(
-            pretrained_model_name_or_path=embedding_model,
-            revision=model_version,
-            do_lower_case=True,
-            use_fast=use_fast_tokenizers,
-            tokenizer_class=tokenizer_default_class,
-            use_auth_token=use_auth_token,
-        )
-        self.encoder = LanguageModel.load(
-            pretrained_model_name_or_path=embedding_model, revision=model_version, use_auth_token=use_auth_token
-        )
-
-        self.processor = TextSimilarityProcessor(
-            query_tokenizer=self.tokenizer,
-            passage_tokenizer=self.tokenizer,
-            max_seq_len_passage=max_seq_len_passage,
-            max_seq_len_query=max_seq_len_query,
-            label_list=["hard_negative", "positive"],
-            metric="text_similarity_metric",
-            embed_title=embed_title,
-            num_hard_negatives=0,
-            num_positives=1,
-        )
-        prediction_head = TextSimilarityHead(
-            similarity_function=similarity_function, global_loss_buffer_size=global_loss_buffer_size
-        )
-        self.model: Union[BiAdaptiveSharedModel, DataParallel] = BiAdaptiveSharedModel(
-            language_model1=self.encoder,
-            language_model2=self.encoder,
-            prediction_heads=[prediction_head],
-            embeds_dropout_prob=0.1,
-            device=self.devices[0],
-            lm1_output_types=["per_sequence"],
-            lm2_output_types=["per_sequence"],
-        )
-
-        self.model.connect_heads_with_processor(self.processor.tasks, require_labels=False)
-
-        if len(self.devices) > 1:
-            self.model = DataParallel(self.model, device_ids=self.devices)
-
-    def retrieve(
-        self,
-        query: str,
-        filters: Optional[Dict[str, Union[Dict, List, str, int, float, bool]]] = None,
-        top_k: Optional[int] = None,
-        index: str = None,
-        headers: Optional[Dict[str, str]] = None,
-        scale_score: bool = None,
-    ) -> List[Document]:
-        """
-        Scan through documents in DocumentStore and return a small number documents
-        that are most relevant to the query.
-
-        :param query: The query
-        :param filters: Optional filters to narrow down the search space to documents whose metadata fulfill certain
-                        conditions.
-                        Filters are defined as nested dictionaries. The keys of the dictionaries can be a logical
-                        operator (`"$and"`, `"$or"`, `"$not"`), a comparison operator (`"$eq"`, `"$in"`, `"$gt"`,
-                        `"$gte"`, `"$lt"`, `"$lte"`) or a metadata field name.
-                        Logical operator keys take a dictionary of metadata field names and/or logical operators as
-                        value. Metadata field names take a dictionary of comparison operators as value. Comparison
-                        operator keys take a single value or (in case of `"$in"`) a list of values as value.
-                        If no logical operator is provided, `"$and"` is used as default operation. If no comparison
-                        operator is provided, `"$eq"` (or `"$in"` if the comparison value is a list) is used as default
-                        operation.
-
-                            __Example__:
-                            ```python
-                            filters = {
-                                "$and": {
-                                    "type": {"$eq": "article"},
-                                    "date": {"$gte": "2015-01-01", "$lt": "2021-01-01"},
-                                    "rating": {"$gte": 3},
-                                    "$or": {
-                                        "genre": {"$in": ["economy", "politics"]},
-                                        "publisher": {"$eq": "nytimes"}
-                                    }
-                                }
-                            }
-                            # or simpler using default operators
-                            filters = {
-                                "type": "article",
-                                "date": {"$gte": "2015-01-01", "$lt": "2021-01-01"},
-                                "rating": {"$gte": 3},
-                                "$or": {
-                                    "genre": ["economy", "politics"],
-                                    "publisher": "nytimes"
-                                }
-                            }
-                            ```
-
-                            To use the same logical operator multiple times on the same level, logical operators take
-                            optionally a list of dictionaries as value.
-
-                            __Example__:
-                            ```python
-                            filters = {
-                                "$or": [
-                                    {
-                                        "$and": {
-                                            "Type": "News Paper",
-                                            "Date": {
-                                                "$lt": "2019-01-01"
-                                            }
-                                        }
-                                    },
-                                    {
-                                        "$and": {
-                                            "Type": "Blog Post",
-                                            "Date": {
-                                                "$gte": "2019-01-01"
-                                            }
-                                        }
-                                    }
-                                ]
-                            }
-                            ```
-        :param top_k: How many documents to return per query.
-        :param index: The name of the index in the DocumentStore from which to retrieve documents
-        :param scale_score: Whether to scale the similarity score to the unit interval (range of [0,1]).
-                                           If true similarity scores (e.g. cosine or dot_product) which naturally have a different value range will be scaled to a range of [0,1], where 1 means extremely relevant.
-                                           Otherwise raw similarity scores (e.g. cosine or dot_product) will be used.
-        """
-        return self.retrieve_batch(  # type: ignore
-            queries=query,
-            filters=[filters] if filters is not None else None,
-            top_k=top_k,
-            index=index,
-            headers=headers,
-            scale_score=scale_score,
-            batch_size=1,
-        )
-
-    def retrieve_batch(
-        self,
-        queries: Union[str, List[str]],
-        filters: Optional[
-            Union[
-                Dict[str, Union[Dict, List, str, int, float, bool]],
-                List[Dict[str, Union[Dict, List, str, int, float, bool]]],
-            ]
-        ] = None,
-        top_k: Optional[int] = None,
-        index: str = None,
-        headers: Optional[Dict[str, str]] = None,
-        batch_size: Optional[int] = None,
-        scale_score: bool = None,
-    ) -> Union[List[Document], List[List[Document]]]:
-        """
-        Scan through documents in DocumentStore and return a small number documents
-        that are most relevant to the supplied queries.
-
-        If you supply a single query, a single list of Documents is returned. If you supply a list of queries, a list of
-        lists of Documents (one per query) is returned.
-
-        :param queries: Single query string or list of queries.
-        :param filters: Optional filters to narrow down the search space to documents whose metadata fulfill certain
-                        conditions. Can be a single filter that will be applied to each query or a list of filters
-                        (one filter per query).
-
-                        Filters are defined as nested dictionaries. The keys of the dictionaries can be a logical
-                        operator (`"$and"`, `"$or"`, `"$not"`), a comparison operator (`"$eq"`, `"$in"`, `"$gt"`,
-                        `"$gte"`, `"$lt"`, `"$lte"`) or a metadata field name.
-                        Logical operator keys take a dictionary of metadata field names and/or logical operators as
-                        value. Metadata field names take a dictionary of comparison operators as value. Comparison
-                        operator keys take a single value or (in case of `"$in"`) a list of values as value.
-                        If no logical operator is provided, `"$and"` is used as default operation. If no comparison
-                        operator is provided, `"$eq"` (or `"$in"` if the comparison value is a list) is used as default
-                        operation.
-
-                            __Example__:
-                            ```python
-                            filters = {
-                                "$and": {
-                                    "type": {"$eq": "article"},
-                                    "date": {"$gte": "2015-01-01", "$lt": "2021-01-01"},
-                                    "rating": {"$gte": 3},
-                                    "$or": {
-                                        "genre": {"$in": ["economy", "politics"]},
-                                        "publisher": {"$eq": "nytimes"}
-                                    }
-                                }
-                            }
-                            # or simpler using default operators
-                            filters = {
-                                "type": "article",
-                                "date": {"$gte": "2015-01-01", "$lt": "2021-01-01"},
-                                "rating": {"$gte": 3},
-                                "$or": {
-                                    "genre": ["economy", "politics"],
-                                    "publisher": "nytimes"
-                                }
-                            }
-                            ```
-
-                            To use the same logical operator multiple times on the same level, logical operators take
-                            optionally a list of dictionaries as value.
-
-                            __Example__:
-                            ```python
-                            filters = {
-                                "$or": [
-                                    {
-                                        "$and": {
-                                            "Type": "News Paper",
-                                            "Date": {
-                                                "$lt": "2019-01-01"
-                                            }
-                                        }
-                                    },
-                                    {
-                                        "$and": {
-                                            "Type": "Blog Post",
-                                            "Date": {
-                                                "$gte": "2019-01-01"
-                                            }
-                                        }
-                                    }
-                                ]
-                            }
-                            ```
-        :param top_k: How many documents to return per query.
-        :param index: The name of the index in the DocumentStore from which to retrieve documents
-        :param batch_size: Number of queries to embed at a time.
-        :param scale_score: Whether to scale the similarity score to the unit interval (range of [0,1]).
-                            If true similarity scores (e.g. cosine or dot_product) which naturally have a different
-                            value range will be scaled to a range of [0,1], where 1 means extremely relevant.
-                            Otherwise raw similarity scores (e.g. cosine or dot_product) will be used.
-        """
-
-        if top_k is None:
-            top_k = self.top_k
-
-        if batch_size is None:
-            batch_size = self.batch_size
-
-        single_query = False
-        if isinstance(queries, str):
-            queries = [queries]
-            single_query = True
-
-        if isinstance(filters, list):
-            if len(filters) != len(queries):
-                raise HaystackError(
-                    "Number of filters does not match number of queries. Please provide as many filters"
-                    " as queries or a single filter that will be applied to each query."
-                )
-        else:
-            filters = [{}] * len(queries)
-
-        if index is None:
-            index = self.document_store.index
-        if scale_score is None:
-            scale_score = self.scale_score
-        if not self.document_store:
-            logger.error(
-                "Cannot perform retrieve_batch() since MultihopDenseRetriever initialized with document_store=None"
-            )
-            if single_query:
-                single_result: List[Document] = []
-                return single_result
-            else:
-                result: List[List[Document]] = [[] * len(queries)]
-                return result
-
-        documents = []
-        batches = self._get_batches(queries=queries, batch_size=batch_size)
-        # TODO: Currently filters are applied both for final and context documents.
-        # maybe they should only apply for final docs? or make it configurable with a param?
-        for batch, cur_filters in zip(batches, filters):
-            context_docs: List[List[Document]] = [[] for _ in range(len(batch))]
-            for it in range(self.num_iterations):
-                query_embs = self.embed_queries(queries=batch, contexts=context_docs)
-                for idx, emb in enumerate(query_embs):
-                    cur_docs = self.document_store.query_by_embedding(
-                        query_emb=emb,
-                        top_k=top_k,
-                        filters=cur_filters,
-                        index=index,
-                        headers=headers,
-                        scale_score=scale_score,
-                    )
-                    if it < self.num_iterations - 1:
-                        # add doc with highest score to context
-                        if len(cur_docs) > 0:
-                            context_docs[idx].append(cur_docs[0])
-                    else:
-                        # documents in the last iteration are final results
-                        documents.append(cur_docs)
-
-        if single_query:
-            return documents[0]
-        else:
-            return documents
-
-    def _get_predictions(self, dicts):
-        """
-        Feed a preprocessed dataset to the model and get the actual predictions (forward pass + formatting).
-
-        :param dicts: list of dictionaries
-        examples:[{'query': "where is florida?"}, {'query': "who wrote lord of the rings?"}, ...]
-                [{'passages': [{
-                    "title": 'Big Little Lies (TV series)',
-                    "text": 'series garnered several accolades. It received..',
-                    "label": 'positive',
-                    "external_id": '18768923'},
-                    {"title": 'Framlingham Castle',
-                    "text": 'Castle on the Hill "Castle on the Hill" is a song by English..',
-                    "label": 'positive',
-                    "external_id": '19930582'}, ...]
-        :return: dictionary of embeddings for "passages" and "query"
-        """
-        dataset, tensor_names, _, baskets = self.processor.dataset_from_dicts(
-            dicts, indices=[i for i in range(len(dicts))], return_baskets=True
-        )
-
-        data_loader = NamedDataLoader(
-            dataset=dataset, sampler=SequentialSampler(dataset), batch_size=self.batch_size, tensor_names=tensor_names
-        )
-        all_embeddings = {"query": [], "passages": []}
-        self.model.eval()
-
-        # When running evaluations etc., we don't want a progress bar for every single query
-        if len(dataset) == 1:
-            disable_tqdm = True
-        else:
-            disable_tqdm = not self.progress_bar
-
-        with tqdm(
-            total=len(data_loader) * self.batch_size,
-            unit=" Docs",
-            desc=f"Create embeddings",
-            position=1,
-            leave=False,
-            disable=disable_tqdm,
-        ) as progress_bar:
-            for batch in data_loader:
-                batch = {key: batch[key].to(self.devices[0]) for key in batch}
-
-                # get logits
-                with torch.no_grad():
-                    query_embeddings, passage_embeddings = self.model.forward(**batch)[0]
-                    if query_embeddings is not None:
-                        all_embeddings["query"].append(query_embeddings.cpu().numpy())
-                    if passage_embeddings is not None:
-                        all_embeddings["passages"].append(passage_embeddings.cpu().numpy())
-                progress_bar.update(self.batch_size)
-
-        if all_embeddings["passages"]:
-            all_embeddings["passages"] = np.concatenate(all_embeddings["passages"])
-        if all_embeddings["query"]:
-            all_embeddings["query"] = np.concatenate(all_embeddings["query"])
-        return all_embeddings
-
-    def _merge_query_and_context(self, query: str, context: List[Document], sep: str = " "):
-        return sep.join([query] + [doc.content for doc in context])
-
-    def embed_queries(self, queries: List[str], contexts: List[List[Document]]) -> List[np.ndarray]:
-        """
-        Create embeddings for a list of queries using the query encoder
-
-        :param queries: Queries to embed
-        :param contexts: Context documents
-        :return: Embeddings, one per input queries
-        """
-        encoder_inputs = [{"query": self._merge_query_and_context(q, c)} for q, c in zip(queries, contexts)]
-        result = self._get_predictions(encoder_inputs)["query"]
-        return result
-
-    def embed_documents(self, docs: List[Document]) -> List[np.ndarray]:
-        """
-        Create embeddings for a list of documents using the passage encoder
-
-        :param docs: List of Document objects used to represent documents / passages in a standardized way within Haystack.
-        :return: Embeddings of documents / passages shape (batch_size, embedding_dim)
-        """
-        if self.processor.num_hard_negatives != 0:
-            logger.warning(
-                f"'num_hard_negatives' is set to {self.processor.num_hard_negatives}, but inference does "
-                f"not require any hard negatives. Setting num_hard_negatives to 0."
-            )
-            self.processor.num_hard_negatives = 0
-
-        passages = [
-            {
-                "passages": [
-                    {
-                        "title": d.meta["name"] if d.meta and "name" in d.meta else "",
-                        "text": d.content,
-                        "label": d.meta["label"] if d.meta and "label" in d.meta else "positive",
-                        "external_id": d.id,
-                    }
-                ]
-            }
-            for d in docs
-        ]
-        embeddings = self._get_predictions(passages)["passages"]
-
-        return embeddings
-
-    @property
-    def _model(self) -> BiAdaptiveSharedModel:
-        """
-        Helper property that always returns the BiAdaptiveSharedModel, even if it's wrapped in a DataParallel
-        """
-        if isinstance(self.model, DataParallel):
-            assert isinstance(self.model.module, BiAdaptiveSharedModel)
-            return self.model.module
-        else:
-            return self.model
-
-    def save(self, save_dir: Union[Path, str], encoder_dir: str = "encoder"):
-        """
-        Save MultihopDenseRetriever to the specified directory.
-
-        :param save_dir: Directory to save to.
-        :param encoder_dir: Directory in save_dir that contains encoder model.
-        :return: None
-        """
-        save_dir = Path(save_dir)
-        self._model.save(save_dir, lm_name=encoder_dir)
-        save_dir = str(save_dir)
-        self.tokenizer.save_pretrained(Path(save_dir) / encoder_dir)
-
-    @classmethod
-    def load(
-        cls,
-        load_dir: Union[Path, str],
-        document_store: BaseDocumentStore,
-        max_seq_len_query: int = 64,
-        max_seq_len_passage: int = 256,
-        use_gpu: bool = True,
-        batch_size: int = 16,
-        embed_title: bool = True,
-        use_fast_tokenizers: bool = True,
-        similarity_function: str = "dot_product",
-        encoder_dir: str = "encoder",
-        infer_tokenizer_classes: bool = False,
-    ):
-        """
-        Load MultihopDenseRetriever from the specified directory.
-        """
-        load_dir = Path(load_dir)
-        mdr = cls(
-            document_store=document_store,
-            embedding_model=Path(load_dir) / encoder_dir,
-            max_seq_len_query=max_seq_len_query,
-            max_seq_len_passage=max_seq_len_passage,
-            use_gpu=use_gpu,
-            batch_size=batch_size,
-            embed_title=embed_title,
-            use_fast_tokenizers=use_fast_tokenizers,
-            similarity_function=similarity_function,
-            infer_tokenizer_classes=infer_tokenizer_classes,
-        )
-        logger.info(f"MDR model loaded from {load_dir}")
-
-        return mdr
 
 
 class TableTextRetriever(BaseRetriever):
@@ -2417,3 +1837,315 @@ class EmbeddingRetriever(BaseRetriever):
             doc.content = "\n".join(meta_data_fields + [doc.content])
             linearized_docs.append(doc)
         return linearized_docs
+
+
+class MultihopDenseRetriever(EmbeddingRetriever):
+    """
+    Retriever that applies iterative retrieval using a shared encoder for query and passage.
+    See original paper for more details:
+
+    Xiong, Wenhan, et. al. (2020): "Answering complex open-domain questions with multi-hop dense retrieval"
+    (https://arxiv.org/abs/2009.12756)
+    """
+
+    def __init__(
+        self,
+        document_store: BaseDocumentStore,
+        embedding_model: str,
+        model_version: Optional[str] = None,
+        num_iterations: int = 2,
+        use_gpu: bool = True,
+        batch_size: int = 32,
+        max_seq_len: int = 512,
+        model_format: str = "farm",
+        pooling_strategy: str = "reduce_mean",
+        emb_extraction_layer: int = -1,
+        top_k: int = 10,
+        progress_bar: bool = True,
+        devices: Optional[List[Union[str, torch.device]]] = None,
+        use_auth_token: Optional[Union[str, bool]] = None,
+        scale_score: bool = True,
+        embed_meta_fields: List[str] = [],
+    ):
+        """
+        Same parameters as `EmbeddingRetriever` except
+
+        :param num_iterations: The number of times passages are retrieved, i.e., the number of hops (Defaults to 2.)
+        """
+        super().__init__(
+            document_store,
+            embedding_model,
+            model_version,
+            use_gpu,
+            batch_size,
+            max_seq_len,
+            model_format,
+            pooling_strategy,
+            emb_extraction_layer,
+            top_k,
+            progress_bar,
+            devices,
+            use_auth_token,
+            scale_score,
+            embed_meta_fields,
+        )
+        self.num_iterations = num_iterations
+
+    def _merge_query_and_context(self, query: str, context: List[Document], sep: str = " "):
+        return sep.join([query] + [doc.content for doc in context])
+
+    def retrieve(
+        self,
+        query: str,
+        filters: Optional[Dict[str, Union[Dict, List, str, int, float, bool]]] = None,
+        top_k: Optional[int] = None,
+        index: str = None,
+        headers: Optional[Dict[str, str]] = None,
+        scale_score: bool = None,
+    ) -> List[Document]:
+        """
+        Scan through documents in DocumentStore and return a small number documents
+        that are most relevant to the query.
+
+        :param query: The query
+        :param filters: Optional filters to narrow down the search space to documents whose metadata fulfill certain
+                        conditions.
+                        Filters are defined as nested dictionaries. The keys of the dictionaries can be a logical
+                        operator (`"$and"`, `"$or"`, `"$not"`), a comparison operator (`"$eq"`, `"$in"`, `"$gt"`,
+                        `"$gte"`, `"$lt"`, `"$lte"`) or a metadata field name.
+                        Logical operator keys take a dictionary of metadata field names and/or logical operators as
+                        value. Metadata field names take a dictionary of comparison operators as value. Comparison
+                        operator keys take a single value or (in case of `"$in"`) a list of values as value.
+                        If no logical operator is provided, `"$and"` is used as default operation. If no comparison
+                        operator is provided, `"$eq"` (or `"$in"` if the comparison value is a list) is used as default
+                        operation.
+
+                            __Example__:
+                            ```python
+                            filters = {
+                                "$and": {
+                                    "type": {"$eq": "article"},
+                                    "date": {"$gte": "2015-01-01", "$lt": "2021-01-01"},
+                                    "rating": {"$gte": 3},
+                                    "$or": {
+                                        "genre": {"$in": ["economy", "politics"]},
+                                        "publisher": {"$eq": "nytimes"}
+                                    }
+                                }
+                            }
+                            # or simpler using default operators
+                            filters = {
+                                "type": "article",
+                                "date": {"$gte": "2015-01-01", "$lt": "2021-01-01"},
+                                "rating": {"$gte": 3},
+                                "$or": {
+                                    "genre": ["economy", "politics"],
+                                    "publisher": "nytimes"
+                                }
+                            }
+                            ```
+
+                            To use the same logical operator multiple times on the same level, logical operators take
+                            optionally a list of dictionaries as value.
+
+                            __Example__:
+                            ```python
+                            filters = {
+                                "$or": [
+                                    {
+                                        "$and": {
+                                            "Type": "News Paper",
+                                            "Date": {
+                                                "$lt": "2019-01-01"
+                                            }
+                                        }
+                                    },
+                                    {
+                                        "$and": {
+                                            "Type": "Blog Post",
+                                            "Date": {
+                                                "$gte": "2019-01-01"
+                                            }
+                                        }
+                                    }
+                                ]
+                            }
+                            ```
+        :param top_k: How many documents to return per query.
+        :param index: The name of the index in the DocumentStore from which to retrieve documents
+        :param scale_score: Whether to scale the similarity score to the unit interval (range of [0,1]).
+                                           If true similarity scores (e.g. cosine or dot_product) which naturally have a different value range will be scaled to a range of [0,1], where 1 means extremely relevant.
+                                           Otherwise raw similarity scores (e.g. cosine or dot_product) will be used.
+        """
+        return self.retrieve_batch(  # type: ignore
+            queries=query,
+            filters=[filters] if filters is not None else None,
+            top_k=top_k,
+            index=index,
+            headers=headers,
+            scale_score=scale_score,
+            batch_size=1,
+        )
+
+    def retrieve_batch(
+        self,
+        queries: Union[str, List[str]],
+        filters: Optional[
+            Union[
+                Dict[str, Union[Dict, List, str, int, float, bool]],
+                List[Dict[str, Union[Dict, List, str, int, float, bool]]],
+            ]
+        ] = None,
+        top_k: Optional[int] = None,
+        index: str = None,
+        headers: Optional[Dict[str, str]] = None,
+        batch_size: Optional[int] = None,
+        scale_score: bool = None,
+    ) -> Union[List[Document], List[List[Document]]]:
+        """
+        Scan through documents in DocumentStore and return a small number documents
+        that are most relevant to the supplied queries.
+
+        If you supply a single query, a single list of Documents is returned. If you supply a list of queries, a list of
+        lists of Documents (one per query) is returned.
+
+        :param queries: Single query string or list of queries.
+        :param filters: Optional filters to narrow down the search space to documents whose metadata fulfill certain
+                        conditions. Can be a single filter that will be applied to each query or a list of filters
+                        (one filter per query).
+
+                        Filters are defined as nested dictionaries. The keys of the dictionaries can be a logical
+                        operator (`"$and"`, `"$or"`, `"$not"`), a comparison operator (`"$eq"`, `"$in"`, `"$gt"`,
+                        `"$gte"`, `"$lt"`, `"$lte"`) or a metadata field name.
+                        Logical operator keys take a dictionary of metadata field names and/or logical operators as
+                        value. Metadata field names take a dictionary of comparison operators as value. Comparison
+                        operator keys take a single value or (in case of `"$in"`) a list of values as value.
+                        If no logical operator is provided, `"$and"` is used as default operation. If no comparison
+                        operator is provided, `"$eq"` (or `"$in"` if the comparison value is a list) is used as default
+                        operation.
+
+                            __Example__:
+                            ```python
+                            filters = {
+                                "$and": {
+                                    "type": {"$eq": "article"},
+                                    "date": {"$gte": "2015-01-01", "$lt": "2021-01-01"},
+                                    "rating": {"$gte": 3},
+                                    "$or": {
+                                        "genre": {"$in": ["economy", "politics"]},
+                                        "publisher": {"$eq": "nytimes"}
+                                    }
+                                }
+                            }
+                            # or simpler using default operators
+                            filters = {
+                                "type": "article",
+                                "date": {"$gte": "2015-01-01", "$lt": "2021-01-01"},
+                                "rating": {"$gte": 3},
+                                "$or": {
+                                    "genre": ["economy", "politics"],
+                                    "publisher": "nytimes"
+                                }
+                            }
+                            ```
+
+                            To use the same logical operator multiple times on the same level, logical operators take
+                            optionally a list of dictionaries as value.
+
+                            __Example__:
+                            ```python
+                            filters = {
+                                "$or": [
+                                    {
+                                        "$and": {
+                                            "Type": "News Paper",
+                                            "Date": {
+                                                "$lt": "2019-01-01"
+                                            }
+                                        }
+                                    },
+                                    {
+                                        "$and": {
+                                            "Type": "Blog Post",
+                                            "Date": {
+                                                "$gte": "2019-01-01"
+                                            }
+                                        }
+                                    }
+                                ]
+                            }
+                            ```
+        :param top_k: How many documents to return per query.
+        :param index: The name of the index in the DocumentStore from which to retrieve documents
+        :param batch_size: Number of queries to embed at a time.
+        :param scale_score: Whether to scale the similarity score to the unit interval (range of [0,1]).
+                            If true similarity scores (e.g. cosine or dot_product) which naturally have a different
+                            value range will be scaled to a range of [0,1], where 1 means extremely relevant.
+                            Otherwise raw similarity scores (e.g. cosine or dot_product) will be used.
+        """
+
+        if top_k is None:
+            top_k = self.top_k
+
+        if batch_size is None:
+            batch_size = self.batch_size
+
+        single_query = False
+        if isinstance(queries, str):
+            queries = [queries]
+            single_query = True
+
+        if isinstance(filters, list):
+            if len(filters) != len(queries):
+                raise HaystackError(
+                    "Number of filters does not match number of queries. Please provide as many filters"
+                    " as queries or a single filter that will be applied to each query."
+                )
+        else:
+            filters = [{}] * len(queries)
+
+        if index is None:
+            index = self.document_store.index
+        if scale_score is None:
+            scale_score = self.scale_score
+        if not self.document_store:
+            logger.error(
+                "Cannot perform retrieve_batch() since MultihopDenseRetriever initialized with document_store=None"
+            )
+            if single_query:
+                single_result: List[Document] = []
+                return single_result
+            else:
+                result: List[List[Document]] = [[] * len(queries)]
+                return result
+
+        documents = []
+        batches = self._get_batches(queries=queries, batch_size=batch_size)
+        # TODO: Currently filters are applied both for final and context documents.
+        # maybe they should only apply for final docs? or make it configurable with a param?
+        for batch, cur_filters in zip(batches, filters):
+            context_docs: List[List[Document]] = [[] for _ in range(len(batch))]
+            for it in range(self.num_iterations):
+                texts = [self._merge_query_and_context(q, c) for q, c in zip(batch, context_docs)]
+                query_embs = self.embed_queries(texts)
+                for idx, emb in enumerate(query_embs):
+                    cur_docs = self.document_store.query_by_embedding(
+                        query_emb=emb,
+                        top_k=top_k,
+                        filters=cur_filters,
+                        index=index,
+                        headers=headers,
+                        scale_score=scale_score,
+                    )
+                    if it < self.num_iterations - 1:
+                        # add doc with highest score to context
+                        if len(cur_docs) > 0:
+                            context_docs[idx].append(cur_docs[0])
+                    else:
+                        # documents in the last iteration are final results
+                        documents.append(cur_docs)
+
+        if single_query:
+            return documents[0]
+        else:
+            return documents
